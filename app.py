@@ -1,5 +1,6 @@
-from datetime import datetime
+%%writefile dashboard_etfs.py
 import time
+from datetime import datetime
 from typing import Dict, Tuple
 
 import numpy as np
@@ -16,23 +17,7 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-TICKERS = [
-    "QQQ",
-    "XLK",
-    "SMH",
-    "IGV",
-    "XLC",
-    "XLY",
-    "XLF",
-    "AAPL",
-    "NVDA",
-    "MSFT",
-    "GOOGL",
-    "AMZN",
-    "MU",
-    "AMD",
-    "AUDJPY=X",
-]
+TICKERS = ["QQQ", "XLK", "SMH", "IGV", "XLC", "XLY", "XLF", "AAPL", "NVDA", "MSFT", "GOOGL", "AMZN", "MU", "AMD", "AUDJPY=X"]
 RSI_PERIOD = 14
 RSI_MA_PERIOD = 14
 TIMEZONE_BRT = pytz.timezone("America/Sao_Paulo")
@@ -47,11 +32,11 @@ def calculate_rsi_wilder(series: pd.Series, period: int = 14) -> pd.Series:
     avg_loss = loss.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
 
     rs = avg_gain / avg_loss.replace(0, np.nan)
-    rsi = 100 / (1 + rs)
+    rsi = 100 - (100 / (1 + rs))
     return rsi.fillna(50.0)
 
 
-@st.cache_data(ttl=60, show_spinner=False)
+@st.cache_data(ttl=25, show_spinner=False)
 def fetch_and_process_data(
     tickers: Tuple[str, ...],
     rsi_len: int,
@@ -108,7 +93,6 @@ def main() -> None:
 
         if st.button("Atualizar Agora", use_container_width=True):
             st.cache_data.clear()
-            st.rerun()
 
     data_map = fetch_and_process_data(
         tuple(TICKERS), int(rsi_len), int(ma_len), include_extended
@@ -193,6 +177,7 @@ def main() -> None:
 
     st.subheader("Curva RSI(14) vs. Média Móvel(14) — Gráfico de 5 Minutos")
 
+    # Calculando dinamicamente a quantidade de linhas para os subplots baseados no número de tickers ativos
     active_tickers = [t for t in TICKERS if t in data_map]
     num_plots = len(active_tickers)
     num_cols = 2
@@ -253,7 +238,7 @@ def main() -> None:
         idx += 1
 
     fig.update_layout(
-        height=int(280 * num_rows),
+        height=240 * num_rows,
         template="plotly_dark",
         margin=dict(l=20, r=20, t=40, b=20),
     )
