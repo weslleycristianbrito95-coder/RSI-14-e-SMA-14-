@@ -1,6 +1,10 @@
-%%writefile dashboard_etfs.py
-import time
+"""
+Dashboard Intraday - RSI(14) vs Média Móvel(14) para ETFs e Ativos dos EUA.
+Desenvolvido com Streamlit e Plotly.
+"""
+
 from datetime import datetime
+import time
 from typing import Dict, Tuple
 
 import numpy as np
@@ -11,19 +15,25 @@ import pytz
 import streamlit as st
 import yfinance as yf
 
+# Configuração da página Streamlit
 st.set_page_config(
-    page_title="Scanner Intraday RSI(14) vs SMA(14) - ETFs EUA",
+    page_title="Scanner Intraday RSI vs SMA - ETFs EUA",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-TICKERS = ["QQQ", "XLK", "SMH", "IGV", "XLC", "XLY", "XLF", "AAPL", "NVDA", "MSFT", "GOOGL", "AMZN", "MU", "AMD", "AUDJPY=X"]
+# Constantes globais
+TICKERS = [
+    "QQQ", "XLK", "SMH", "IGV", "XLC", "XLY", "XLF", 
+    "AAPL", "NVDA", "MSFT", "GOOGL", "AMZN", "MU", "AMD", "AUDJPY=X"
+]
 RSI_PERIOD = 14
 RSI_MA_PERIOD = 14
 TIMEZONE_BRT = pytz.timezone("America/Sao_Paulo")
 
 
 def calculate_rsi_wilder(series: pd.Series, period: int = 14) -> pd.Series:
+    """Calcula o RSI utilizando a suavização de Wilder (Exponential Moving Average)."""
     delta = series.diff()
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
@@ -43,6 +53,7 @@ def fetch_and_process_data(
     ma_len: int,
     include_extended: bool,
 ) -> Dict[str, pd.DataFrame]:
+    """Baixa dados intraday via yfinance e calcula os indicadores técnicos."""
     raw = yf.download(
         tickers=list(tickers),
         period="5d",
@@ -81,17 +92,18 @@ def fetch_and_process_data(
 
 
 def main() -> None:
-    st.title("Monitor Intraday 5m — RSI(14) vs. Média Móvel(14)")
+    st.title("📊 Monitor Intraday 5m — RSI(14) vs. Média Móvel(14)")
+    st.markdown("Monitoramento em tempo real de força relativa para principais ETFs e ativos tech dos EUA.")
 
     with st.sidebar:
-        st.header("Parâmetros")
+        st.header("⚙️ Parâmetros")
         rsi_len = st.number_input("Período RSI", min_value=2, max_value=50, value=RSI_PERIOD)
         ma_len = st.number_input("Média Móvel no RSI (SMA)", min_value=2, max_value=50, value=RSI_MA_PERIOD)
         include_extended = st.checkbox("Incluir Pré / After-Market", value=False)
         auto_refresh = st.checkbox("Auto-atualizar (30s)", value=True)
         candles_chart = st.slider("Candles visíveis no gráfico", min_value=30, max_value=150, value=78)
 
-        if st.button("Atualizar Agora", use_container_width=True):
+        if st.button("🔄 Atualizar Agora", use_container_width=True):
             st.cache_data.clear()
 
     data_map = fetch_and_process_data(
@@ -175,9 +187,8 @@ def main() -> None:
 
     st.dataframe(styled_df, use_container_width=True, hide_index=True)
 
-    st.subheader("Curva RSI(14) vs. Média Móvel(14) — Gráfico de 5 Minutos")
+    st.subheader("📈 Curva RSI(14) vs. Média Móvel(14) — Gráfico de 5 Minutos")
 
-    # Calculando dinamicamente a quantidade de linhas para os subplots baseados no número de tickers ativos
     active_tickers = [t for t in TICKERS if t in data_map]
     num_plots = len(active_tickers)
     num_cols = 2
@@ -190,7 +201,7 @@ def main() -> None:
             f"{t} — {'ACIMA' if data_map[t]['Acima_Media'].iloc[-1] else 'ABAIXO'}"
             for t in active_tickers
         ],
-        vertical_spacing=0.04,
+        vertical_spacing=0.06,
         horizontal_spacing=0.06,
     )
 
@@ -238,7 +249,7 @@ def main() -> None:
         idx += 1
 
     fig.update_layout(
-        height=240 * num_rows,
+        height=280 * num_rows,
         template="plotly_dark",
         margin=dict(l=20, r=20, t=40, b=20),
     )
