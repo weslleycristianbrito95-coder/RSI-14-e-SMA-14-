@@ -1,5 +1,10 @@
-import time
+"""
+Dashboard Intraday - RSI(14) vs Média Móvel(14) para ETFs e Ativos dos EUA.
+Desenvolvido com Streamlit e Plotly.
+"""
+
 from datetime import datetime
+import time
 from typing import Dict, Tuple
 
 import numpy as np
@@ -10,19 +15,25 @@ import pytz
 import streamlit as st
 import yfinance as yf
 
+# Configuração da página Streamlit
 st.set_page_config(
-    page_title="Scanner Intraday RSI(14) vs SMA(14) - ETFs & Ativos",
+    page_title="Scanner Intraday RSI vs SMA - ETFs EUA",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-TICKERS = ["SOX", "SMH", "IGV", "QQQ", "AUDUSD=X", "GBPUSD=X", "EURUSD=X", "USDJPY=X", "USDCHF=X", "XLK", "XLC", "XLY", "XLF", "AAPL", "NVDA", "MSFT", "AMZN", "MU", "AMD", "TSLA"]
+# Constantes globais
+TICKERS = [
+    "QQQ", "XLK", "SMH", "IGV", "XLC", "XLY", "XLF", 
+    "AAPL", "NVDA", "MSFT", "GOOGL", "AMZN", "MU", "AMD", "AUDJPY=X"
+]
 RSI_PERIOD = 14
 RSI_MA_PERIOD = 14
 TIMEZONE_BRT = pytz.timezone("America/Sao_Paulo")
 
 
 def calculate_rsi_wilder(series: pd.Series, period: int = 14) -> pd.Series:
+    """Calcula o RSI utilizando a suavização de Wilder (Exponential Moving Average)."""
     delta = series.diff()
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
@@ -42,6 +53,7 @@ def fetch_and_process_data(
     ma_len: int,
     include_extended: bool,
 ) -> Dict[str, pd.DataFrame]:
+    """Baixa dados intraday via yfinance e calcula os indicadores técnicos."""
     raw = yf.download(
         tickers=list(tickers),
         period="5d",
@@ -67,10 +79,7 @@ def fetch_and_process_data(
             else:
                 df.index = df.index.tz_convert(TIMEZONE_BRT)
 
-            # Calcula RSI Padrão
-            rsi_series = calculate_rsi_wilder(df["Close"], period=rsi_len)
-
-            df["RSI"] = rsi_series
+            df["RSI"] = calculate_rsi_wilder(df["Close"], period=rsi_len)
             df["RSI_MA"] = df["RSI"].rolling(window=ma_len).mean()
             df["Spread"] = df["RSI"] - df["RSI_MA"]
             df["Acima_Media"] = df["RSI"] > df["RSI_MA"]
@@ -83,18 +92,18 @@ def fetch_and_process_data(
 
 
 def main() -> None:
-    st.title("Monitor Intraday 5m — RSI(14) vs. Média Móvel(14)")
-    st.markdown("Scanner automatizado de ativos globais e ETFs utilizando dados intradiários de 5 minutos.")
+    st.title("📊 Monitor Intraday 5m — RSI(14) vs. Média Móvel(14)")
+    st.markdown("Monitoramento em tempo real de força relativa para principais ETFs e ativos tech dos EUA.")
 
     with st.sidebar:
-        st.header("Parâmetros")
+        st.header("⚙️ Parâmetros")
         rsi_len = st.number_input("Período RSI", min_value=2, max_value=50, value=RSI_PERIOD)
         ma_len = st.number_input("Média Móvel no RSI (SMA)", min_value=2, max_value=50, value=RSI_MA_PERIOD)
         include_extended = st.checkbox("Incluir Pré / After-Market", value=False)
         auto_refresh = st.checkbox("Auto-atualizar (30s)", value=True)
         candles_chart = st.slider("Candles visíveis no gráfico", min_value=30, max_value=150, value=78)
 
-        if st.button("Atualizar Agora", use_container_width=True):
+        if st.button("🔄 Atualizar Agora", use_container_width=True):
             st.cache_data.clear()
 
     data_map = fetch_and_process_data(
@@ -119,20 +128,12 @@ def main() -> None:
         is_above = bool(last["Acima_Media"])
         was_above = bool(prev["Acima_Media"])
 
-        # Inversão de status lógico para moedas que andam contra o mercado
-        if ticker in ["USDJPY=X", "USDCHF=X"]:
-            display_above = not is_above
-            display_was_above = not was_above
-        else:
-            display_above = is_above
-            display_was_above = was_above
-
-        if display_above:
+        if is_above:
             acima_count += 1
 
-        if display_above and not display_was_above:
+        if is_above and not was_above:
             evento = "CRUZOU PARA CIMA"
-        elif not display_above and display_was_above:
+        elif not is_above and was_above:
             evento = "CRUZOU PARA BAIXO"
         else:
             evento = "Mantendo tendência"
@@ -141,11 +142,11 @@ def main() -> None:
             {
                 "Ativo": ticker,
                 "Último Candle (BRT)": df.index[-1].strftime("%d/%m %H:%M"),
-                "Preço": round(float(last["Close"]), 4) if "=X" in ticker else round(float(last["Close"]), 2),
+                "Preço": round(float(last["Close"]), 2),
                 "RSI (14)": round(float(last["RSI"]), 2),
                 "Média RSI (14)": round(float(last["RSI_MA"]), 2),
                 "Spread (RSI - MA)": round(float(last["Spread"]), 2),
-                "Status": "ACIMA DA MÉDIA" if display_above else "ABAIXO DA MÉDIA",
+                "Status": "ACIMA DA MÉDIA" if is_above else "ABAIXO DA MÉDIA",
                 "Sinal Último Candle": evento,
             }
         )
@@ -172,26 +173,12 @@ def main() -> None:
             return "color: #ef4444; font-weight: bold;"
         return "color: #888888;"
 
-    formatted_prices = []
-    for idx, row in summary_df.iterrows():
-        if "=X" in str(row["Ativo"]):
-            formatted_prices.append(f"{row['Preço']:.4f}")
-        else:
-            formatted_prices.append(f"${row['Preço']:.2f}")
-    summary_df["Preço Formated"] = formatted_prices
-
-    cols_order = [
-        "Ativo", "Último Candle (BRT)", "Preço Formated", "RSI (14)",
-        "Média RSI (14)", "Spread (RSI - MA)", "Status", "Sinal Último Candle"
-    ]
-    display_df = summary_df[cols_order].rename(columns={"Preço Formated": "Preço"})
-
-    # Compatibilidade com versões recentes do Pandas Styler (.map)
     styled_df = (
-        display_df.style
+        summary_df.style
         .map(highlight_status, subset=["Status"])
         .map(highlight_event, subset=["Sinal Último Candle"])
         .format({
+            "Preço": "${:.2f}",
             "RSI (14)": "{:.2f}",
             "Média RSI (14)": "{:.2f}",
             "Spread (RSI - MA)": "{:+.2f}",
@@ -200,7 +187,7 @@ def main() -> None:
 
     st.dataframe(styled_df, use_container_width=True, hide_index=True)
 
-    st.subheader("Curva RSI(14) vs. Média Móvel(14) — Gráfico de 5 Minutos")
+    st.subheader("📈 Curva RSI(14) vs. Média Móvel(14) — Gráfico de 5 Minutos")
 
     active_tickers = [t for t in TICKERS if t in data_map]
     num_plots = len(active_tickers)
@@ -211,11 +198,10 @@ def main() -> None:
         rows=num_rows,
         cols=num_cols,
         subplot_titles=[
-            f"{t} — {'ABAIXO' if data_map[t]['Acima_Media'].iloc[-1] else 'ACIMA'} (Invertido)" if t in ["USDJPY=X", "USDCHF=X"]
-            else f"{t} — {'ACIMA' if data_map[t]['Acima_Media'].iloc[-1] else 'ABAIXO'}"
+            f"{t} — {'ACIMA' if data_map[t]['Acima_Media'].iloc[-1] else 'ABAIXO'}"
             for t in active_tickers
         ],
-        vertical_spacing=0.04,
+        vertical_spacing=0.06,
         horizontal_spacing=0.06,
     )
 
@@ -227,11 +213,7 @@ def main() -> None:
         x_labels = df_plot.index.strftime("%d/%m %H:%M")
 
         is_above = bool(df_plot["Acima_Media"].iloc[-1])
-        
-        if ticker in ["USDJPY=X", "USDCHF=X"]:
-            rsi_color = "#ef4444" if is_above else "#10b981"
-        else:
-            rsi_color = "#10b981" if is_above else "#ef4444"
+        rsi_color = "#10b981" if is_above else "#ef4444"
 
         fig.add_trace(
             go.Scatter(
@@ -261,18 +243,13 @@ def main() -> None:
 
         fig.add_hline(y=70, line_dash="dash", line_color="rgba(255,255,255,0.2)", row=row, col=col)
         fig.add_hline(y=30, line_dash="dash", line_color="rgba(255,255,255,0.2)", row=row, col=col)
-
-        if ticker in ["USDJPY=X", "USDCHF=X"]:
-            fig.update_yaxes(range=[90, 10], row=row, col=col)
-        else:
-            fig.update_yaxes(range=[10, 90], row=row, col=col)
-
+        fig.update_yaxes(range=[10, 90], row=row, col=col)
         fig.update_xaxes(nticks=6, row=row, col=col)
 
         idx += 1
 
     fig.update_layout(
-        height=240 * num_rows,
+        height=280 * num_rows,
         template="plotly_dark",
         margin=dict(l=20, r=20, t=40, b=20),
     )
