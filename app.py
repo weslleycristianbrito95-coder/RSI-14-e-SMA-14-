@@ -10,9 +10,9 @@ import pytz
 import streamlit as st
 import yfinance as yf
 
-# Configuração da página (Deve ser a primeira chamada Streamlit)
+# Configuração da página (Deve ser sempre a primeira chamada Streamlit)
 st.set_page_config(
-    page_title="Scanner Intraday RSI(14) vs SMA(14)",
+    page_title="Viés Macro 15M — RSI(14) vs SMA(14)",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -28,7 +28,7 @@ RSI_PERIOD = 14
 RSI_MA_PERIOD = 14
 TIMEZONE_BRT = pytz.timezone("America/Sao_Paulo")
 
-# Ativos com lógica e escala invertidas
+# Ativos que operam com a lógica e escala invertidas
 INVERTED_TICKERS = ["EURUSD=X", "GBPUSD=X", "^VIX"]
 
 
@@ -54,7 +54,6 @@ def fetch_and_process_data(
 ) -> Dict[str, pd.DataFrame]:
     processed: Dict[str, pd.DataFrame] = {}
     
-    # Baixando os dados em lote pelo yfinance
     try:
         raw = yf.download(
             tickers=list(tickers),
@@ -83,13 +82,13 @@ def fetch_and_process_data(
             if df.empty or len(df) < (rsi_len + ma_len + 2):
                 continue
 
-            # Tratamento de fuso horário
+            # Tratamento de fuso horário para Brasília
             if df.index.tz is None:
                 df.index = df.index.tz_localize("UTC").tz_convert(TIMEZONE_BRT)
             else:
                 df.index = df.index.tz_convert(TIMEZONE_BRT)
 
-            # Cálculo de RSI e Média
+            # Cálculo do RSI e Média Móvel
             rsi_series = calculate_rsi_wilder(df["Close"], period=rsi_len)
 
             df["RSI"] = rsi_series
@@ -105,7 +104,7 @@ def fetch_and_process_data(
 
 
 def main() -> None:
-    st.title("Monitor Intraday 5m — RSI(14) vs. Média Móvel(14)")
+    st.title("VIÉS MACRO 15M")
 
     with st.sidebar:
         st.header("Parâmetros")
@@ -119,13 +118,13 @@ def main() -> None:
             st.cache_data.clear()
             st.rerun()
 
-    with st.spinner("Buscando dados de mercado..."):
+    with st.spinner("Buscando dados de mercado (15m)..."):
         data_map = fetch_and_process_data(
             tuple(TICKERS), int(rsi_len), int(ma_len), include_extended
         )
 
     if not data_map:
-        st.error("Não foi possível obter dados no momento. O Yahoo Finance pode estar limitando as requisições temporariamente. Tente novamente em instantes.")
+        st.error("Não foi possível obter dados do Yahoo Finance no momento. O servidor pode estar limitando requisições temporariamente. Tente novamente em instantes.")
         return
 
     summary_rows = []
@@ -208,7 +207,6 @@ def main() -> None:
     ]
     display_df = summary_df[cols_order].rename(columns={"Preço Formated": "Preço"})
 
-    # Substituição compatível com as versões recentes do Pandas Styler
     styled_df = (
         display_df.style
         .map(highlight_status, subset=["Status"])
@@ -222,7 +220,7 @@ def main() -> None:
 
     st.dataframe(styled_df, use_container_width=True, hide_index=True)
 
-    st.subheader("VIÉS MACRO")
+    st.subheader("Curva RSI(14) vs. Média Móvel(14) — Gráfico de 15 Minutos")
 
     active_tickers = [t for t in TICKERS if t in data_map]
     num_plots = len(active_tickers)
@@ -255,7 +253,7 @@ def main() -> None:
         else:
             rsi_color = "#10b981" if is_above else "#ef4444"
 
-        fig.add_trace( 
+        fig.add_trace(
             go.Scatter(
                 x=x_labels,
                 y=df_plot["RSI"],
@@ -301,7 +299,7 @@ def main() -> None:
     st.plotly_chart(fig, use_container_width=True)
 
     if auto_refresh:
-        time.sleep(60)  # Aumentado para 60s para evitar rate-limit do Yahoo na nuvem
+        time.sleep(60)  # Ajustado para 60 segundos para evitar rate-limits do Yahoo na nuvem
         st.rerun()
 
 
