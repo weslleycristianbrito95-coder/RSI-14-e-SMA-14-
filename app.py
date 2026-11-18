@@ -59,7 +59,7 @@ def fetch_and_process_data(
         raw = yf.download(
             tickers=list(tickers),
             period="5d",
-            interval="5m",
+            interval="15m",
             group_by="ticker",
             prepost=include_extended,
             threads=True,
@@ -222,7 +222,7 @@ def main() -> None:
 
     st.dataframe(styled_df, use_container_width=True, hide_index=True)
 
-    st.subheader("Curva RSI(14) vs. Média Móvel(14) — Gráfico de 5 Minutos")
+    st.subheader("VIÉS MACRO")
 
     active_tickers = [t for t in TICKERS if t in data_map]
     num_plots = len(active_tickers)
