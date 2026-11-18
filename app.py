@@ -10,9 +10,8 @@ import pytz
 import streamlit as st
 import yfinance as yf
 
-# Configuração da página (Deve ser sempre a primeira chamada Streamlit)
 st.set_page_config(
-    page_title="Viés Macro 15M — RSI(14) vs SMA(14)",
+    page_title="Scanner Intraday RSI vs SMA",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -25,10 +24,10 @@ TICKERS = [
     "BTC-USD", "EURUSD=X", "GBPUSD=X", "^VIX"
 ]
 RSI_PERIOD = 14
-RSI_MA_PERIOD = 14
+RSI_MA_PERIOD = 20
 TIMEZONE_BRT = pytz.timezone("America/Sao_Paulo")
 
-# Ativos que operam com a lógica e escala invertidas
+# Ativos que operam com a lógica e escala invertidas (Incluído o ^VIX)
 INVERTED_TICKERS = ["EURUSD=X", "GBPUSD=X", "^VIX"]
 
 
@@ -82,13 +81,12 @@ def fetch_and_process_data(
             if df.empty or len(df) < (rsi_len + ma_len + 2):
                 continue
 
-            # Tratamento de fuso horário para Brasília
             if df.index.tz is None:
                 df.index = df.index.tz_localize("UTC").tz_convert(TIMEZONE_BRT)
             else:
                 df.index = df.index.tz_convert(TIMEZONE_BRT)
 
-            # Cálculo do RSI e Média Móvel
+            # Calcula RSI Padrão
             rsi_series = calculate_rsi_wilder(df["Close"], period=rsi_len)
 
             df["RSI"] = rsi_series
@@ -124,11 +122,14 @@ def main() -> None:
         )
 
     if not data_map:
-        st.error("Não foi possível obter dados do Yahoo Finance no momento. O servidor pode estar limitando requisições temporariamente. Tente novamente em instantes.")
+        st.error("Não foi possível obter dados do Yahoo Finance no momento. Tente novamente em instantes.")
         return
 
     summary_rows = []
     acima_count = 0
+
+    rsi_col_name = f"RSI ({rsi_len})"
+    ma_col_name = f"Média RSI ({ma_len})"
 
     for ticker in TICKERS:
         df = data_map.get(ticker)
@@ -163,8 +164,8 @@ def main() -> None:
                 "Ativo": ticker,
                 "Último Candle (BRT)": df.index[-1].strftime("%d/%m %H:%M"),
                 "Preço": round(float(last["Close"]), 4) if "=X" in ticker else round(float(last["Close"]), 2),
-                "RSI (14)": round(float(last["RSI"]), 2),
-                "Média RSI (14)": round(float(last["RSI_MA"]), 2),
+                rsi_col_name: round(float(last["RSI"]), 2),
+                ma_col_name: round(float(last["RSI_MA"]), 2),
                 "Spread (RSI - MA)": round(float(last["Spread"]), 2),
                 "Status": "ACIMA DA MÉDIA" if display_above else "ABAIXO DA MÉDIA",
                 "Sinal Último Candle": evento,
@@ -175,8 +176,8 @@ def main() -> None:
 
     now_brt = datetime.now(TIMEZONE_BRT).strftime("%H:%M:%S")
     col1, col2, col3 = st.columns(3)
-    col1.metric("Ativos Acima da Média", f"{acima_count} de {len(summary_df)}")
-    col2.metric("Ativos Abaixo da Média", f"{len(summary_df) - acima_count} de {len(summary_df)}")
+    col1.metric("Ativos Acima da Média (RSI > SMA)", f"{acima_count} de {len(summary_df)}")
+    col2.metric("Ativos Abaixo da Média (RSI < SMA)", f"{len(summary_df) - acima_count} de {len(summary_df)}")
     col3.metric("Última Atualização (Brasília)", now_brt)
 
     def highlight_status(val: str) -> str:
@@ -202,8 +203,8 @@ def main() -> None:
     summary_df["Preço Formated"] = formatted_prices
 
     cols_order = [
-        "Ativo", "Último Candle (BRT)", "Preço Formated", "RSI (14)",
-        "Média RSI (14)", "Spread (RSI - MA)", "Status", "Sinal Último Candle"
+        "Ativo", "Último Candle (BRT)", "Preço Formated", rsi_col_name,
+        ma_col_name, "Spread (RSI - MA)", "Status", "Sinal Último Candle"
     ]
     display_df = summary_df[cols_order].rename(columns={"Preço Formated": "Preço"})
 
@@ -212,15 +213,15 @@ def main() -> None:
         .map(highlight_status, subset=["Status"])
         .map(highlight_event, subset=["Sinal Último Candle"])
         .format({
-            "RSI (14)": "{:.2f}",
-            "Média RSI (14)": "{:.2f}",
+            rsi_col_name: "{:.2f}",
+            ma_col_name: "{:.2f}",
             "Spread (RSI - MA)": "{:+.2f}",
         })
     )
 
     st.dataframe(styled_df, use_container_width=True, hide_index=True)
 
-    st.subheader("Curva RSI(14) vs. Média Móvel(14) — Gráfico de 15 Minutos")
+    st.subheader(f"Curva RSI({rsi_len}) vs. Média Móvel ({ma_len}) — Gráfico de 15 Minutos")
 
     active_tickers = [t for t in TICKERS if t in data_map]
     num_plots = len(active_tickers)
@@ -299,7 +300,7 @@ def main() -> None:
     st.plotly_chart(fig, use_container_width=True)
 
     if auto_refresh:
-        time.sleep(60)  # Ajustado para 60 segundos para evitar rate-limits do Yahoo na nuvem
+        time.sleep(60)
         st.rerun()
 
 
