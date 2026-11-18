@@ -10,7 +10,7 @@ import pytz
 import streamlit as st
 import yfinance as yf
 
-# Configuração da página deve ser a primeira chamada Streamlit
+# Configuração da página (Deve ser a primeira chamada Streamlit)
 st.set_page_config(
     page_title="Scanner Intraday RSI(14) vs SMA(14)",
     layout="wide",
@@ -22,15 +22,14 @@ TICKERS = [
     "QQQ", "SOX", "SMH", "IGV", "XLK", "XLC", "XLY", "XLF",
     "AAPL", "NVDA", "MSFT", "AMZN", "MU", "AMD", "TSLA",
     "AUDUSD=X", "NZDUSD=X", "AUDJPY=X", "NZDJPY=X", "USDJPY=X",
-    "BTC-USD", "EURUSD=X", "GBPUSD=X"
+    "BTC-USD", "EURUSD=X", "GBPUSD=X", "^VIX"
 ]
-
 RSI_PERIOD = 14
 RSI_MA_PERIOD = 14
 TIMEZONE_BRT = pytz.timezone("America/Sao_Paulo")
 
 # Ativos com lógica e escala invertidas
-INVERTED_TICKERS = ["EURUSD=X", "GBPUSD=X"]
+INVERTED_TICKERS = ["EURUSD=X", "GBPUSD=X", "^VIX"]
 
 
 def calculate_rsi_wilder(series: pd.Series, period: int = 14) -> pd.Series:
@@ -55,7 +54,7 @@ def fetch_and_process_data(
 ) -> Dict[str, pd.DataFrame]:
     processed: Dict[str, pd.DataFrame] = {}
     
-    # Baixando em lote com tratamento de erro individual para maior estabilidade no Streamlit Cloud
+    # Baixando os dados em lote pelo yfinance
     try:
         raw = yf.download(
             tickers=list(tickers),
@@ -67,13 +66,13 @@ def fetch_and_process_data(
             progress=False,
         )
     except Exception as e:
-        st.error(f"Erro de conexão com o Yahoo Finance: {e}")
+        st.error(f"Erro na conexão com Yahoo Finance: {e}")
         return processed
 
     for ticker in tickers:
         try:
             if len(tickers) > 1:
-                if ticker not in raw.columns.levels[0]:
+                if ticker not in raw or raw[ticker].empty:
                     continue
                 df = raw[ticker].copy()
             else:
@@ -84,14 +83,15 @@ def fetch_and_process_data(
             if df.empty or len(df) < (rsi_len + ma_len + 2):
                 continue
 
-            # Ajuste de Fuso Horário
+            # Tratamento de fuso horário
             if df.index.tz is None:
                 df.index = df.index.tz_localize("UTC").tz_convert(TIMEZONE_BRT)
             else:
                 df.index = df.index.tz_convert(TIMEZONE_BRT)
 
-            # Cálculo de Indicadores
+            # Cálculo de RSI e Média
             rsi_series = calculate_rsi_wilder(df["Close"], period=rsi_len)
+
             df["RSI"] = rsi_series
             df["RSI_MA"] = df["RSI"].rolling(window=ma_len).mean()
             df["Spread"] = df["RSI"] - df["RSI_MA"]
@@ -106,27 +106,26 @@ def fetch_and_process_data(
 
 def main() -> None:
     st.title("Monitor Intraday 5m — RSI(14) vs. Média Móvel(14)")
-    st.markdown("Monitoramento em tempo real de ativos globais utilizando cruzamento de RSI com Média Móvel.")
 
     with st.sidebar:
-        st.header("⚙️ Parâmetros")
+        st.header("Parâmetros")
         rsi_len = st.number_input("Período RSI", min_value=2, max_value=50, value=RSI_PERIOD)
         ma_len = st.number_input("Média Móvel no RSI (SMA)", min_value=2, max_value=50, value=RSI_MA_PERIOD)
         include_extended = st.checkbox("Incluir Pré / After-Market", value=False)
-        auto_refresh = st.checkbox("Auto-atualizar (30s)", value=True)
+        auto_refresh = st.checkbox("Auto-atualizar (60s)", value=True)
         candles_chart = st.slider("Candles visíveis no gráfico", min_value=30, max_value=150, value=78)
 
-        if st.button("🔄 Atualizar Agora", use_container_width=True):
+        if st.button("Atualizar Agora", use_container_width=True):
             st.cache_data.clear()
             st.rerun()
 
-    with st.spinner("Buscando dados atualizados do mercado..."):
+    with st.spinner("Buscando dados de mercado..."):
         data_map = fetch_and_process_data(
             tuple(TICKERS), int(rsi_len), int(ma_len), include_extended
         )
 
     if not data_map:
-        st.error("Não foi possível obter dados no momento. O Yahoo Finance pode estar limitando as requisições. Tente novamente em instantes.")
+        st.error("Não foi possível obter dados no momento. O Yahoo Finance pode estar limitando as requisições temporariamente. Tente novamente em instantes.")
         return
 
     summary_rows = []
@@ -154,9 +153,9 @@ def main() -> None:
             acima_count += 1
 
         if display_above and not display_was_above:
-            evento = "🚀 CRUZOU PARA CIMA"
+            evento = "CRUZOU PARA CIMA"
         elif not display_above and display_was_above:
-            evento = "🔻 CRUZOU PARA BAIXO"
+            evento = "CRUZOU PARA BAIXO"
         else:
             evento = "Mantendo tendência"
 
@@ -209,6 +208,7 @@ def main() -> None:
     ]
     display_df = summary_df[cols_order].rename(columns={"Preço Formated": "Preço"})
 
+    # Substituição compatível com as versões recentes do Pandas Styler
     styled_df = (
         display_df.style
         .map(highlight_status, subset=["Status"])
@@ -222,7 +222,7 @@ def main() -> None:
 
     st.dataframe(styled_df, use_container_width=True, hide_index=True)
 
-    st.subheader("📈 Curva RSI(14) vs. Média Móvel(14) — Gráfico de 5 Minutos")
+    st.subheader("Curva RSI(14) vs. Média Móvel(14) — Gráfico de 5 Minutos")
 
     active_tickers = [t for t in TICKERS if t in data_map]
     num_plots = len(active_tickers)
@@ -255,7 +255,7 @@ def main() -> None:
         else:
             rsi_color = "#10b981" if is_above else "#ef4444"
 
-        fig.add_trace(
+        fig.add_trace( 
             go.Scatter(
                 x=x_labels,
                 y=df_plot["RSI"],
@@ -293,7 +293,7 @@ def main() -> None:
         idx += 1
 
     fig.update_layout(
-        height=260 * num_rows,
+        height=240 * num_rows,
         template="plotly_dark",
         margin=dict(l=20, r=20, t=40, b=20),
     )
@@ -301,7 +301,7 @@ def main() -> None:
     st.plotly_chart(fig, use_container_width=True)
 
     if auto_refresh:
-        time.sleep(30)
+        time.sleep(60)  # Aumentado para 60s para evitar rate-limit do Yahoo na nuvem
         st.rerun()
 
 
