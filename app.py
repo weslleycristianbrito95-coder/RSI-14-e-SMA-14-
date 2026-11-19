@@ -12,7 +12,7 @@ import streamlit.components.v1 as components
 import yfinance as yf
 
 st.set_page_config(
-    page_title="Viés Macro 15M — Scanner RSI vs SMA",
+    page_title="Scanner Intraday RSI vs SMA",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -64,6 +64,14 @@ TIMEZONE_BRT = pytz.timezone("America/Sao_Paulo")
 
 # Ativos que operam com a lógica e escala invertidas
 INVERTED_TICKERS = ["^VIX", "DX-Y.NYB"]
+
+# Galeria de sons disponíveis para o alarme
+SOUND_GALLERY = {
+    "Sino Clássico": "https://raw.githubusercontent.com/carlesb/react-native-sound-playerview/master/assets/bell.mp3",
+    "Sirene de Emergência": "https://www.soundjay.com/buttons/sounds/button-10.mp3",
+    "Acorde de Piano": "https://www.soundjay.com/misc/sounds/piano-g-major.mp3",
+    "Bip Eletrônico": "https://www.soundjay.com/buttons/sounds/button-3.mp3"
+}
 
 
 def calculate_rsi_wilder(series: pd.Series, period: int = 14) -> pd.Series:
@@ -132,36 +140,42 @@ def fetch_and_process_data(
             df["Acima_Media"] = df["RSI"] > df["RSI_MA"]
 
             processed[ticker] = df
-        except Exception:
-            continue
+        except Exception as exc:
+            st.warning(f"Erro ao processar {ticker}: {exc}")
 
     return processed
 
 
-def play_alarm_sound() -> None:
-    # Utiliza Web Audio API nativa para evitar falhas de links externos de MP3
-    sound_html = """
-    <script>
-    (function() {
-        try {
-            const AudioCtx = window.AudioContext || window.webkitAudioContext;
-            const ctx = new AudioCtx();
-            const osc = ctx.createOscillator();
-            const gain = ctx.createGain();
-            osc.type = 'sine';
-            osc.frequency.setValueAtTime(880, ctx.currentTime);
-            osc.frequency.exponentialRampToValueAtTime(440, ctx.currentTime + 0.4);
-            gain.gain.setValueAtTime(0.3, ctx.currentTime);
-            gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.4);
-            osc.connect(gain);
-            gain.connect(ctx.destination);
-            osc.start();
-            osc.stop(ctx.currentTime + 0.45);
-        } catch (e) {
-            console.log("Áudio bloqueado pelo navegador até interação do usuário.");
-        }
-    })();
-    </script>
+def play_alarm_sound(sound_url: str) -> None:
+    sound_html = f"""
+    <div>
+        <audio id="alarmAudio" autoplay>
+            <source src="{sound_url}" type="audio/mp3">
+        </audio>
+        <script>
+        (function() {{
+            const audioEl = document.getElementById("alarmAudio");
+            if (audioEl) {{
+                audioEl.play().catch(function() {{
+                    try {{
+                        const AudioCtx = window.AudioContext || window.webkitAudioContext;
+                        const ctx = new AudioCtx();
+                        const osc = ctx.createOscillator();
+                        const gain = ctx.createGain();
+                        osc.type = 'sine';
+                        osc.frequency.setValueAtTime(880, ctx.currentTime);
+                        gain.gain.setValueAtTime(0.25, ctx.currentTime);
+                        gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.35);
+                        osc.connect(gain);
+                        gain.connect(ctx.destination);
+                        osc.start();
+                        osc.stop(ctx.currentTime + 0.38);
+                    }} catch (e) {{}}
+                }});
+            }}
+        }})();
+        </script>
+    </div>
     """
     components.html(sound_html, height=0, width=0)
 
@@ -179,18 +193,19 @@ def main() -> None:
 
         st.header("Configuração de Alerta")
         enable_sound = st.checkbox("Ativar Alerta Sonoro", value=True)
+        selected_sound_name = st.selectbox("Escolher Som do Alarme", list(SOUND_GALLERY.keys()))
         alert_percentage = st.slider(
             "Gatilho do Alerta (% do mesmo lado)", min_value=50, max_value=100, value=90, step=1
         )
-        if st.button("Testar Som / Desbloquear Áudio", use_container_width=True):
-            play_alarm_sound()
+        if st.button("Testar Som Selecionado", use_container_width=True):
+            play_alarm_sound(SOUND_GALLERY[selected_sound_name])
 
         st.divider()
         if st.button("Atualizar Agora", use_container_width=True):
             st.cache_data.clear()
             st.rerun()
 
-    with st.spinner("Sincronizando cotações intraday (15m)..."):
+    with st.spinner("Sincronizando cotações (15m)..."):
         data_map = fetch_and_process_data(
             tuple(TICKERS), int(rsi_len), int(ma_len), include_extended
         )
@@ -254,13 +269,14 @@ def main() -> None:
     if total_ativos > 0:
         pct_acima = acima_count / total_ativos
         pct_abaixo = (total_ativos - acima_count) / total_ativos
+
         target_ratio = alert_percentage / 100.0
 
         if pct_acima >= target_ratio or pct_abaixo >= target_ratio:
-            direcao = "COMPRA (ACIMA DA MÉDIA)" if pct_acima >= target_ratio else "VENDA (ABAIXO DA MÉDIA)"
             if enable_sound:
-                play_alarm_sound()
-            st.toast(f"ALERTA MACRO: Mais de {alert_percentage}% alinhados em {direcao}!", icon="🚨")
+                sound_url = SOUND_GALLERY[selected_sound_name]
+                play_alarm_sound(sound_url)
+            st.toast(f"⚠️ ALERTA: Mais de {alert_percentage}% dos ativos estão no mesmo sentido!", icon="🚨")
 
     now_brt = datetime.now(TIMEZONE_BRT).strftime("%H:%M:%S")
     col1, col2, col3 = st.columns(3)
@@ -378,6 +394,7 @@ def main() -> None:
             fig.update_yaxes(range=[10, 90], row=row, col=col)
 
         fig.update_xaxes(nticks=6, row=row, col=col)
+
         idx += 1
 
     fig.update_layout(
