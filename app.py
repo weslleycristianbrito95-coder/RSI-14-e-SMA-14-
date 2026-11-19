@@ -8,7 +8,6 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import pytz
 import streamlit as st
-import streamlit.components.v1 as components
 import yfinance as yf
 
 st.set_page_config(
@@ -17,11 +16,10 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# Lista de ativos organizada por segmento de mercado
+# Lista de ativos organizada por segmento de mercado (removido US02Y)
 TICKERS = [
     # --- ÍNDICES & ETFS DE SETORES ---
     "QQQ",       # Nasdaq 100
-    "SOX",       # PHLX Semiconductor Index
     "SMH",       # VanEck Semiconductor ETF
     "IGV",       # iShares Expanded Tech-Software ETF
     "XLK",       # Technology Select Sector SPDR
@@ -54,8 +52,7 @@ TICKERS = [
     "^VIX",      # Índice de Volatilidade CBOE
 
     # --- MACRO & RENDA FIXA ---
-    "DX-Y.NYB",  # Índice Dólar (DXY)
-    "US02Y=F"    # Rendimento de Títulos EUA 2 anos (Yield)
+    "DX-Y.NYB"   # Índice Dólar (DXY)
 ]
 
 RSI_PERIOD = 14
@@ -64,14 +61,6 @@ TIMEZONE_BRT = pytz.timezone("America/Sao_Paulo")
 
 # Ativos que operam com a lógica e escala invertidas
 INVERTED_TICKERS = ["^VIX", "DX-Y.NYB"]
-
-# Galeria de sons disponíveis para o alarme
-SOUND_GALLERY = {
-    "Sino Clássico": "https://raw.githubusercontent.com/carlesb/react-native-sound-playerview/master/assets/bell.mp3",
-    "Sirene de Emergência": "https://www.soundjay.com/buttons/sounds/button-10.mp3",
-    "Acorde de Piano": "https://www.soundjay.com/misc/sounds/piano-g-major.mp3",
-    "Bip Eletrônico": "https://www.soundjay.com/buttons/sounds/button-3.mp3"
-}
 
 
 def calculate_rsi_wilder(series: pd.Series, period: int = 14) -> pd.Series:
@@ -116,11 +105,17 @@ def fetch_and_process_data(
     for ticker in tickers:
         try:
             if len(tickers) > 1:
-                if ticker not in raw.columns.get_level_values(0):
-                    continue
-                df = raw[ticker].copy()
+                if isinstance(raw.columns, pd.MultiIndex):
+                    if ticker not in raw.columns.get_level_values(0):
+                        continue
+                    df = raw[ticker].copy()
+                else:
+                    df = raw.copy()
             else:
                 df = raw.copy()
+
+            if "Close" not in df.columns:
+                continue
 
             df = df.dropna(subset=["Close"])
 
@@ -132,6 +127,7 @@ def fetch_and_process_data(
             else:
                 df.index = df.index.tz_convert(TIMEZONE_BRT)
 
+            # Calcula RSI Padrão
             rsi_series = calculate_rsi_wilder(df["Close"], period=rsi_len)
 
             df["RSI"] = rsi_series
@@ -146,40 +142,6 @@ def fetch_and_process_data(
     return processed
 
 
-def play_alarm_sound(sound_url: str) -> None:
-    sound_html = f"""
-    <div>
-        <audio id="alarmAudio" autoplay>
-            <source src="{sound_url}" type="audio/mp3">
-        </audio>
-        <script>
-        (function() {{
-            const audioEl = document.getElementById("alarmAudio");
-            if (audioEl) {{
-                audioEl.play().catch(function() {{
-                    try {{
-                        const AudioCtx = window.AudioContext || window.webkitAudioContext;
-                        const ctx = new AudioCtx();
-                        const osc = ctx.createOscillator();
-                        const gain = ctx.createGain();
-                        osc.type = 'sine';
-                        osc.frequency.setValueAtTime(880, ctx.currentTime);
-                        gain.gain.setValueAtTime(0.25, ctx.currentTime);
-                        gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.35);
-                        osc.connect(gain);
-                        gain.connect(ctx.destination);
-                        osc.start();
-                        osc.stop(ctx.currentTime + 0.38);
-                    }} catch (e) {{}}
-                }});
-            }}
-        }})();
-        </script>
-    </div>
-    """
-    components.html(sound_html, height=0, width=0)
-
-
 def main() -> None:
     st.title("VIÉS MACRO 15M")
 
@@ -191,16 +153,6 @@ def main() -> None:
         auto_refresh = st.checkbox("Auto-atualizar (60s)", value=True)
         candles_chart = st.slider("Candles visíveis no gráfico", min_value=30, max_value=150, value=78)
 
-        st.header("Configuração de Alerta")
-        enable_sound = st.checkbox("Ativar Alerta Sonoro", value=True)
-        selected_sound_name = st.selectbox("Escolher Som do Alarme", list(SOUND_GALLERY.keys()))
-        alert_percentage = st.slider(
-            "Gatilho do Alerta (% do mesmo lado)", min_value=50, max_value=100, value=90, step=1
-        )
-        if st.button("Testar Som Selecionado", use_container_width=True):
-            play_alarm_sound(SOUND_GALLERY[selected_sound_name])
-
-        st.divider()
         if st.button("Atualizar Agora", use_container_width=True):
             st.cache_data.clear()
             st.rerun()
@@ -248,13 +200,12 @@ def main() -> None:
         else:
             evento = "Mantendo tendência"
 
-        is_four_decimals = "=X" in ticker or "DX" in ticker or "US" in ticker
-
         summary_rows.append(
             {
                 "Ativo": ticker,
+                "Ticker_Original": ticker,
                 "Último Candle (BRT)": df.index[-1].strftime("%d/%m %H:%M"),
-                "Preço": round(float(last["Close"]), 4) if is_four_decimals else round(float(last["Close"]), 2),
+                "Preço": round(float(last["Close"]), 4) if "=X" in ticker or "DX" in ticker else round(float(last["Close"]), 2),
                 rsi_col_name: round(float(last["RSI"]), 2),
                 ma_col_name: round(float(last["RSI_MA"]), 2),
                 "Spread (RSI - MA)": round(float(last["Spread"]), 2),
@@ -265,18 +216,6 @@ def main() -> None:
 
     summary_df = pd.DataFrame(summary_rows)
     total_ativos = len(summary_df)
-
-    if total_ativos > 0:
-        pct_acima = acima_count / total_ativos
-        pct_abaixo = (total_ativos - acima_count) / total_ativos
-
-        target_ratio = alert_percentage / 100.0
-
-        if pct_acima >= target_ratio or pct_abaixo >= target_ratio:
-            if enable_sound:
-                sound_url = SOUND_GALLERY[selected_sound_name]
-                play_alarm_sound(sound_url)
-            st.toast(f"⚠️ ALERTA: Mais de {alert_percentage}% dos ativos estão no mesmo sentido!", icon="🚨")
 
     now_brt = datetime.now(TIMEZONE_BRT).strftime("%H:%M:%S")
     col1, col2, col3 = st.columns(3)
@@ -300,8 +239,8 @@ def main() -> None:
 
     formatted_prices = []
     for _, row in summary_df.iterrows():
-        ativo_str = str(row["Ativo"])
-        if "=X" in ativo_str or "DX" in ativo_str or "US" in ativo_str:
+        tick = row["Ticker_Original"]
+        if "=X" in str(tick) or "DX" in str(tick):
             formatted_prices.append(f"{row['Preço']:.4f}")
         else:
             formatted_prices.append(f"${row['Preço']:.2f}")
@@ -333,14 +272,20 @@ def main() -> None:
     num_cols = 2
     num_rows = (num_plots + 1) // num_cols
 
+    subplot_titles_list = []
+    for t in active_tickers:
+        is_abv = data_map[t]["Acima_Media"].iloc[-1]
+        if t in INVERTED_TICKERS:
+            label = "ABAIXO" if is_abv else "ACIMA"
+            subplot_titles_list.append(f"{t} — {label} (Invertido)")
+        else:
+            label = "ACIMA" if is_abv else "ABAIXO"
+            subplot_titles_list.append(f"{t} — {label}")
+
     fig = make_subplots(
         rows=num_rows,
         cols=num_cols,
-        subplot_titles=[
-            f"{t} — {'ABAIXO' if data_map[t]['Acima_Media'].iloc[-1] else 'ACIMA'} (Invertido)" if t in INVERTED_TICKERS
-            else f"{t} — {'ACIMA' if data_map[t]['Acima_Media'].iloc[-1] else 'ABAIXO'}"
-            for t in active_tickers
-        ],
+        subplot_titles=subplot_titles_list,
         vertical_spacing=0.04,
         horizontal_spacing=0.06,
     )
