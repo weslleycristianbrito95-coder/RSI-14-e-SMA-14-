@@ -8,27 +8,62 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import pytz
 import streamlit as st
+import streamlit.components.v1 as components
 import yfinance as yf
 
 st.set_page_config(
-    page_title="Scanner Intraday RSI vs SMA",
+    page_title="Viés Macro 15M — Scanner RSI vs SMA",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-# Lista de ativos monitorados
+# Lista de ativos organizada por segmento de mercado
 TICKERS = [
-    "QQQ", "SOX", "SMH", "IGV", "XLK", "XLC", "XLY", "XLF",
-    "AAPL", "NVDA", "MSFT", "AMZN", "MU", "AMD", "TSLA",
-    "AUDUSD=X", "NZDUSD=X", "AUDJPY=X", "NZDJPY=X", "USDJPY=X",
-    "BTC-USD", "EURUSD=X", "GBPUSD=X", "^VIX"
+    # --- ÍNDICES & ETFS DE SETORES ---
+    "QQQ",       # Nasdaq 100
+    "SOX",       # PHLX Semiconductor Index
+    "SMH",       # VanEck Semiconductor ETF
+    "IGV",       # iShares Expanded Tech-Software ETF
+    "XLK",       # Technology Select Sector SPDR
+    "XLC",       # Communication Services Select Sector
+    "XLY",       # Consumer Discretionary Select Sector
+    "XLF",       # Financial Select Sector SPDR
+
+    # --- AÇÕES LÍDERES (TECNOLOGIA / CHIPS) ---
+    "AAPL",      # Apple
+    "NVDA",      # NVIDIA
+    "MSFT",      # Microsoft
+    "AMZN",      # Amazon
+    "MU",        # Micron Technology
+    "AMD",       # Advanced Micro Devices
+    "TSLA",      # Tesla
+
+    # --- PARES DE MOEDAS (FOREX) ---
+    "EURUSD=X",  # Euro / Dólar Americano
+    "GBPUSD=X",  # Libra Esterlina / Dólar Americano
+    "USDJPY=X",  # Dólar Americano / Iene Japonês
+    "AUDUSD=X",  # Dólar Australiano / Dólar Americano
+    "NZDUSD=X",  # Dólar Neozelandês / Dólar Americano
+    "AUDJPY=X",  # Dólar Australiano / Iene Japonês
+    "NZDJPY=X",  # Dólar Neozelandês / Iene Japonês
+
+    # --- CRIPTOMOEDAS ---
+    "BTC-USD",   # Bitcoin
+
+    # --- VOLATILIDADE ---
+    "^VIX",      # Índice de Volatilidade CBOE
+
+    # --- MACRO & RENDA FIXA ---
+    "DX-Y.NYB",  # Índice Dólar (DXY)
+    "US02Y=F"    # Rendimento de Títulos EUA 2 anos (Yield)
 ]
+
 RSI_PERIOD = 14
 RSI_MA_PERIOD = 20
 TIMEZONE_BRT = pytz.timezone("America/Sao_Paulo")
 
-# Ativos que operam com a lógica e escala invertidas (Incluído o ^VIX)
-INVERTED_TICKERS = ["EURUSD=X", "GBPUSD=X", "^VIX"]
+# Ativos que operam com a lógica e escala invertidas
+INVERTED_TICKERS = ["^VIX", "DX-Y.NYB"]
 
 
 def calculate_rsi_wilder(series: pd.Series, period: int = 14) -> pd.Series:
@@ -44,7 +79,7 @@ def calculate_rsi_wilder(series: pd.Series, period: int = 14) -> pd.Series:
     return rsi.fillna(50.0)
 
 
-@st.cache_data(ttl=60, show_spinner=False)
+@st.cache_data(ttl=55, show_spinner=False)
 def fetch_and_process_data(
     tickers: Tuple[str, ...],
     rsi_len: int,
@@ -52,7 +87,7 @@ def fetch_and_process_data(
     include_extended: bool,
 ) -> Dict[str, pd.DataFrame]:
     processed: Dict[str, pd.DataFrame] = {}
-    
+
     try:
         raw = yf.download(
             tickers=list(tickers),
@@ -63,14 +98,17 @@ def fetch_and_process_data(
             threads=True,
             progress=False,
         )
-    except Exception as e:
-        st.error(f"Erro na conexão com Yahoo Finance: {e}")
+    except Exception as exc:
+        st.error(f"Erro na conexão com Yahoo Finance: {exc}")
+        return processed
+
+    if raw is None or raw.empty:
         return processed
 
     for ticker in tickers:
         try:
             if len(tickers) > 1:
-                if ticker not in raw or raw[ticker].empty:
+                if ticker not in raw.columns.get_level_values(0):
                     continue
                 df = raw[ticker].copy()
             else:
@@ -86,7 +124,6 @@ def fetch_and_process_data(
             else:
                 df.index = df.index.tz_convert(TIMEZONE_BRT)
 
-            # Calcula RSI Padrão
             rsi_series = calculate_rsi_wilder(df["Close"], period=rsi_len)
 
             df["RSI"] = rsi_series
@@ -101,6 +138,34 @@ def fetch_and_process_data(
     return processed
 
 
+def play_alarm_sound() -> None:
+    # Utiliza Web Audio API nativa para evitar falhas de links externos de MP3
+    sound_html = """
+    <script>
+    (function() {
+        try {
+            const AudioCtx = window.AudioContext || window.webkitAudioContext;
+            const ctx = new AudioCtx();
+            const osc = ctx.createOscillator();
+            const gain = ctx.createGain();
+            osc.type = 'sine';
+            osc.frequency.setValueAtTime(880, ctx.currentTime);
+            osc.frequency.exponentialRampToValueAtTime(440, ctx.currentTime + 0.4);
+            gain.gain.setValueAtTime(0.3, ctx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.4);
+            osc.connect(gain);
+            gain.connect(ctx.destination);
+            osc.start();
+            osc.stop(ctx.currentTime + 0.45);
+        } catch (e) {
+            console.log("Áudio bloqueado pelo navegador até interação do usuário.");
+        }
+    })();
+    </script>
+    """
+    components.html(sound_html, height=0, width=0)
+
+
 def main() -> None:
     st.title("VIÉS MACRO 15M")
 
@@ -112,11 +177,20 @@ def main() -> None:
         auto_refresh = st.checkbox("Auto-atualizar (60s)", value=True)
         candles_chart = st.slider("Candles visíveis no gráfico", min_value=30, max_value=150, value=78)
 
+        st.header("Configuração de Alerta")
+        enable_sound = st.checkbox("Ativar Alerta Sonoro", value=True)
+        alert_percentage = st.slider(
+            "Gatilho do Alerta (% do mesmo lado)", min_value=50, max_value=100, value=90, step=1
+        )
+        if st.button("Testar Som / Desbloquear Áudio", use_container_width=True):
+            play_alarm_sound()
+
+        st.divider()
         if st.button("Atualizar Agora", use_container_width=True):
             st.cache_data.clear()
             st.rerun()
 
-    with st.spinner("Buscando dados de mercado (15m)..."):
+    with st.spinner("Sincronizando cotações intraday (15m)..."):
         data_map = fetch_and_process_data(
             tuple(TICKERS), int(rsi_len), int(ma_len), include_extended
         )
@@ -159,11 +233,13 @@ def main() -> None:
         else:
             evento = "Mantendo tendência"
 
+        is_four_decimals = "=X" in ticker or "DX" in ticker or "US" in ticker
+
         summary_rows.append(
             {
                 "Ativo": ticker,
                 "Último Candle (BRT)": df.index[-1].strftime("%d/%m %H:%M"),
-                "Preço": round(float(last["Close"]), 4) if "=X" in ticker else round(float(last["Close"]), 2),
+                "Preço": round(float(last["Close"]), 4) if is_four_decimals else round(float(last["Close"]), 2),
                 rsi_col_name: round(float(last["RSI"]), 2),
                 ma_col_name: round(float(last["RSI_MA"]), 2),
                 "Spread (RSI - MA)": round(float(last["Spread"]), 2),
@@ -173,11 +249,23 @@ def main() -> None:
         )
 
     summary_df = pd.DataFrame(summary_rows)
+    total_ativos = len(summary_df)
+
+    if total_ativos > 0:
+        pct_acima = acima_count / total_ativos
+        pct_abaixo = (total_ativos - acima_count) / total_ativos
+        target_ratio = alert_percentage / 100.0
+
+        if pct_acima >= target_ratio or pct_abaixo >= target_ratio:
+            direcao = "COMPRA (ACIMA DA MÉDIA)" if pct_acima >= target_ratio else "VENDA (ABAIXO DA MÉDIA)"
+            if enable_sound:
+                play_alarm_sound()
+            st.toast(f"ALERTA MACRO: Mais de {alert_percentage}% alinhados em {direcao}!", icon="🚨")
 
     now_brt = datetime.now(TIMEZONE_BRT).strftime("%H:%M:%S")
     col1, col2, col3 = st.columns(3)
-    col1.metric("Ativos Acima da Média (RSI > SMA)", f"{acima_count} de {len(summary_df)}")
-    col2.metric("Ativos Abaixo da Média (RSI < SMA)", f"{len(summary_df) - acima_count} de {len(summary_df)}")
+    col1.metric("Ativos Acima da Média (RSI > SMA)", f"{acima_count} de {total_ativos}")
+    col2.metric("Ativos Abaixo da Média (RSI < SMA)", f"{total_ativos - acima_count} de {total_ativos}")
     col3.metric("Última Atualização (Brasília)", now_brt)
 
     def highlight_status(val: str) -> str:
@@ -196,7 +284,8 @@ def main() -> None:
 
     formatted_prices = []
     for _, row in summary_df.iterrows():
-        if "=X" in str(row["Ativo"]):
+        ativo_str = str(row["Ativo"])
+        if "=X" in ativo_str or "DX" in ativo_str or "US" in ativo_str:
             formatted_prices.append(f"{row['Preço']:.4f}")
         else:
             formatted_prices.append(f"${row['Preço']:.2f}")
