@@ -1,5 +1,5 @@
-import time
 from datetime import datetime
+import time
 from typing import Dict, Tuple
 
 import numpy as np
@@ -47,6 +47,12 @@ TICKERS = [
 
     # --- CRIPTOMOEDAS ---
     "BTC-USD",   # Bitcoin
+    "ETH-USD",   # Ethereum
+    "SOL-USD",   # Solana
+    "ICP-USD",   # Internet Computer
+    "RENDER-USD",# Render
+    "FET-USD",   # Artificial Superintelligence Alliance (Fetch.ai)
+    "NEAR-USD",  # NEAR Protocol
 
     # --- VOLATILIDADE ---
     "^VIX",      # Índice de Volatilidade CBOE
@@ -76,50 +82,52 @@ def calculate_rsi_wilder(series: pd.Series, period: int = 14) -> pd.Series:
     return rsi.fillna(50.0)
 
 
-@st.cache_data(ttl=55, show_spinner=False)
+def _extract_ticker_df(raw: pd.DataFrame, ticker: str, total_tickers: int) -> pd.DataFrame:
+    if raw is None or raw.empty:
+        return pd.DataFrame()
+
+    if isinstance(raw.columns, pd.MultiIndex):
+        lvl0 = raw.columns.get_level_values(0)
+        lvl1 = raw.columns.get_level_values(1)
+        if ticker in lvl0:
+            return raw[ticker].copy()
+        if ticker in lvl1:
+            return raw.xs(ticker, axis=1, level=1).copy()
+        return pd.DataFrame()
+
+    if total_tickers == 1:
+        return raw.copy()
+
+    return raw[ticker].copy() if ticker in raw.columns else pd.DataFrame()
+
+
+@st.cache_data(ttl=45, show_spinner=False)
 def fetch_and_process_data(
     tickers: Tuple[str, ...],
     rsi_len: int,
     ma_len: int,
     include_extended: bool,
 ) -> Dict[str, pd.DataFrame]:
+    raw = yf.download(
+        tickers=list(tickers),
+        period="5d",
+        interval="15m",
+        group_by="ticker",
+        prepost=include_extended,
+        threads=True,
+        progress=False,
+    )
+
     processed: Dict[str, pd.DataFrame] = {}
-
-    try:
-        raw = yf.download(
-            tickers=list(tickers),
-            period="5d",
-            interval="15m",
-            group_by="ticker",
-            prepost=include_extended,
-            threads=True,
-            progress=False,
-        )
-    except Exception as exc:
-        st.error(f"Erro na conexão com Yahoo Finance: {exc}")
-        return processed
-
-    if raw is None or raw.empty:
-        return processed
 
     for ticker in tickers:
         try:
-            if len(tickers) > 1:
-                if isinstance(raw.columns, pd.MultiIndex):
-                    if ticker not in raw.columns.get_level_values(0):
-                        continue
-                    df = raw[ticker].copy()
-                else:
-                    df = raw.copy()
-            else:
-                df = raw.copy()
-
-            if "Close" not in df.columns:
+            df = _extract_ticker_df(raw, ticker, len(tickers))
+            if df.empty or "Close" not in df.columns:
                 continue
 
             df = df.dropna(subset=["Close"])
-
-            if df.empty or len(df) < (rsi_len + ma_len + 2):
+            if len(df) < (rsi_len + ma_len + 2):
                 continue
 
             if df.index.tz is None:
@@ -127,7 +135,6 @@ def fetch_and_process_data(
             else:
                 df.index = df.index.tz_convert(TIMEZONE_BRT)
 
-            # Calcula RSI Padrão
             rsi_series = calculate_rsi_wilder(df["Close"], period=rsi_len)
 
             df["RSI"] = rsi_series
@@ -145,22 +152,26 @@ def fetch_and_process_data(
 def main() -> None:
     st.title("VIÉS MACRO 15M")
 
+    if "last_refresh_ts" not in st.session_state:
+        st.session_state.last_refresh_ts = time.time()
+
     with st.sidebar:
         st.header("Parâmetros")
         rsi_len = st.number_input("Período RSI", min_value=2, max_value=50, value=RSI_PERIOD)
         ma_len = st.number_input("Média Móvel no RSI (SMA)", min_value=2, max_value=50, value=RSI_MA_PERIOD)
         include_extended = st.checkbox("Incluir Pré / After-Market", value=False)
         auto_refresh = st.checkbox("Auto-atualizar (60s)", value=True)
+        refresh_interval = st.slider("Intervalo auto-refresh (s)", min_value=30, max_value=300, value=60, step=15)
         candles_chart = st.slider("Candles visíveis no gráfico", min_value=30, max_value=150, value=78)
 
-        if st.button("Atualizar Agora", use_container_width=True):
+        if st.button("Atualizar Agora", width="stretch"):
             st.cache_data.clear()
+            st.session_state.last_refresh_ts = time.time()
             st.rerun()
 
-    with st.spinner("Sincronizando cotações (15m)..."):
-        data_map = fetch_and_process_data(
-            tuple(TICKERS), int(rsi_len), int(ma_len), include_extended
-        )
+    data_map = fetch_and_process_data(
+        tuple(TICKERS), int(rsi_len), int(ma_len), include_extended
+    )
 
     if not data_map:
         st.error("Não foi possível obter dados do Yahoo Finance no momento. Tente novamente em instantes.")
@@ -174,7 +185,7 @@ def main() -> None:
 
     for ticker in TICKERS:
         df = data_map.get(ticker)
-        if df is None:
+        if df is None or len(df) < 2:
             continue
 
         last = df.iloc[-1]
@@ -263,7 +274,7 @@ def main() -> None:
         })
     )
 
-    st.dataframe(styled_df, use_container_width=True, hide_index=True)
+    st.dataframe(styled_df, width="stretch", hide_index=True)
 
     st.subheader(f"Curva RSI({rsi_len}) vs. Média Móvel ({ma_len}) — Gráfico de 15 Minutos")
 
@@ -274,7 +285,7 @@ def main() -> None:
 
     subplot_titles_list = []
     for t in active_tickers:
-        is_abv = data_map[t]["Acima_Media"].iloc[-1]
+        is_abv = bool(data_map[t]["Acima_Media"].iloc[-1])
         if t in INVERTED_TICKERS:
             label = "ABAIXO" if is_abv else "ACIMA"
             subplot_titles_list.append(f"{t} — {label} (Invertido)")
@@ -290,8 +301,7 @@ def main() -> None:
         horizontal_spacing=0.06,
     )
 
-    idx = 0
-    for ticker in active_tickers:
+    for idx, ticker in enumerate(active_tickers):
         row = (idx // num_cols) + 1
         col = (idx % num_cols) + 1
         df_plot = data_map[ticker].tail(candles_chart)
@@ -340,19 +350,23 @@ def main() -> None:
 
         fig.update_xaxes(nticks=6, row=row, col=col)
 
-        idx += 1
-
     fig.update_layout(
         height=240 * num_rows,
         template="plotly_dark",
         margin=dict(l=20, r=20, t=40, b=20),
     )
 
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
     if auto_refresh:
-        time.sleep(60)
-        st.rerun()
+        elapsed = time.time() - st.session_state.last_refresh_ts
+        remaining = max(0.0, refresh_interval - elapsed)
+        time.sleep(min(remaining, 5.0))
+        if time.time() - st.session_state.last_refresh_ts >= refresh_interval:
+            st.session_state.last_refresh_ts = time.time()
+            st.rerun()
+        else:
+            st.rerun()
 
 
 if __name__ == "__main__":
