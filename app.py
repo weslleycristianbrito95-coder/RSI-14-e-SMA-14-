@@ -1,5 +1,4 @@
 from datetime import datetime
-import time
 from typing import Dict, Tuple
 
 import numpy as np
@@ -16,49 +15,66 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# Lista de ativos organizada por segmento de mercado (removido US02Y)
+# CSS customizado para reduzir o tamanho da fonte das métricas (KPIs) no topo
+st.markdown(
+    """
+    <style>
+    [data-testid="stMetricValue"] {
+        font-size: 1.4rem !important;
+    }
+    [data-testid="stMetricLabel"] {
+        font-size: 0.85rem !important;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+# Lista de ativos organizada por segmento de mercado
 TICKERS = [
     # --- ÍNDICES & ETFS DE SETORES ---
-    "QQQ",       # Nasdaq 100
-    "SMH",       # VanEck Semiconductor ETF
-    "IGV",       # iShares Expanded Tech-Software ETF
-    "XLK",       # Technology Select Sector SPDR
-    "XLC",       # Communication Services Select Sector
-    "XLY",       # Consumer Discretionary Select Sector
-    "XLF",       # Financial Select Sector SPDR
+    "QQQ",        # Nasdaq 100
+    "SMH",        # VanEck Semiconductor ETF
+    "IGV",        # iShares Expanded Tech-Software ETF
+    "XLK",        # Technology Select Sector SPDR
+    "XLC",        # Communication Services Select Sector
+    "XLY",        # Consumer Discretionary Select Sector
+    "XLF",        # Financial Select Sector SPDR
 
     # --- AÇÕES LÍDERES (TECNOLOGIA / CHIPS) ---
-    "AAPL",      # Apple
-    "NVDA",      # NVIDIA
-    "MSFT",      # Microsoft
-    "AMZN",      # Amazon
-    "MU",        # Micron Technology
-    "AMD",       # Advanced Micro Devices
-    "TSLA",      # Tesla
+    "AAPL",       # Apple
+    "NVDA",       # NVIDIA
+    "MSFT",       # Microsoft
+    "AMZN",       # Amazon
+    "MU",         # Micron Technology
+    "AMD",        # Advanced Micro Devices
+    "TSLA",       # Tesla
 
     # --- PARES DE MOEDAS (FOREX) ---
-    "EURUSD=X",  # Euro / Dólar Americano
-    "GBPUSD=X",  # Libra Esterlina / Dólar Americano
-    "USDJPY=X",  # Dólar Americano / Iene Japonês
-    "AUDUSD=X",  # Dólar Australiano / Dólar Americano
-    "NZDUSD=X",  # Dólar Neozelandês / Dólar Americano
-    "AUDJPY=X",  # Dólar Australiano / Iene Japonês
-    "NZDJPY=X",  # Dólar Neozelandês / Iene Japonês
+    "EURUSD=X",   # Euro / Dólar Americano
+    "GBPUSD=X",   # Libra Esterlina / Dólar Americano
+    "USDJPY=X",   # Dólar Americano / Iene Japonês
+    "AUDUSD=X",   # Dólar Australiano / Dólar Americano
+    "NZDUSD=X",   # Dólar Neozelandês / Dólar Americano
+    "AUDJPY=X",   # Dólar Australiano / Iene Japonês
+    "NZDJPY=X",   # Dólar Neozelandês / Iene Japonês
+    "USDCHF=X",   # Dólar Americano / Franco Suíço
+    "MXNUSD=X",   # Peso Mexicano / Dólar Americano
 
     # --- CRIPTOMOEDAS ---
-    "BTC-USD",   # Bitcoin
-    "ETH-USD",   # Ethereum
-    "SOL-USD",   # Solana
-    "ICP-USD",   # Internet Computer
-    "RENDER-USD",# Render
-    "FET-USD",   # Artificial Superintelligence Alliance (Fetch.ai)
-    "NEAR-USD",  # NEAR Protocol
+    "BTC-USD",    # Bitcoin
+    "ETH-USD",    # Ethereum
+    "SOL-USD",    # Solana
+    "ICP-USD",    # Internet Computer
+    "RENDER-USD", # Render
+    "FET-USD",    # Artificial Superintelligence Alliance (Fetch.ai)
+    "NEAR-USD",   # NEAR Protocol
 
     # --- VOLATILIDADE ---
-    "^VIX",      # Índice de Volatilidade CBOE
+    "^VIX",       # Índice de Volatilidade CBOE
 
     # --- MACRO & RENDA FIXA ---
-    "DX-Y.NYB"   # Índice Dólar (DXY)
+    "DX-Y.NYB",   # Índice Dólar (DXY)
 ]
 
 RSI_PERIOD = 14
@@ -82,33 +98,23 @@ def calculate_rsi_wilder(series: pd.Series, period: int = 14) -> pd.Series:
     return rsi.fillna(50.0)
 
 
-def _extract_ticker_df(raw: pd.DataFrame, ticker: str, total_tickers: int) -> pd.DataFrame:
-    if raw is None or raw.empty:
-        return pd.DataFrame()
-
-    if isinstance(raw.columns, pd.MultiIndex):
-        lvl0 = raw.columns.get_level_values(0)
-        lvl1 = raw.columns.get_level_values(1)
-        if ticker in lvl0:
-            return raw[ticker].copy()
-        if ticker in lvl1:
-            return raw.xs(ticker, axis=1, level=1).copy()
-        return pd.DataFrame()
-
-    if total_tickers == 1:
-        return raw.copy()
-
-    return raw[ticker].copy() if ticker in raw.columns else pd.DataFrame()
-
-
-@st.cache_data(ttl=45, show_spinner=False)
+@st.cache_data(ttl=25, show_spinner=False)
 def fetch_and_process_data(
     tickers: Tuple[str, ...],
     rsi_len: int,
     ma_len: int,
     include_extended: bool,
 ) -> Dict[str, pd.DataFrame]:
-    raw = yf.download(
+    raw_daily = yf.download(
+        tickers=list(tickers),
+        period="40d",
+        interval="1d",
+        group_by="ticker",
+        threads=True,
+        progress=False,
+    )
+
+    raw_intraday = yf.download(
         tickers=list(tickers),
         period="5d",
         interval="15m",
@@ -122,12 +128,28 @@ def fetch_and_process_data(
 
     for ticker in tickers:
         try:
-            df = _extract_ticker_df(raw, ticker, len(tickers))
-            if df.empty or "Close" not in df.columns:
-                continue
+            # Processa dados diários para o Z-Score de 20 dias
+            df_d = raw_daily[ticker].copy() if len(tickers) > 1 else raw_daily.copy()
+            df_d = df_d.dropna(subset=["Close"])
 
+            z_score_val = 0.0
+            if len(df_d) >= 21:
+                df_d["Daily_Return"] = df_d["Close"].pct_change()
+                rolling_mean = df_d["Daily_Return"].rolling(20).mean()
+                rolling_std = df_d["Daily_Return"].rolling(20).std()
+
+                latest_return = float(df_d["Daily_Return"].iloc[-1])
+                l_mean = float(rolling_mean.iloc[-1])
+                l_std = float(rolling_std.iloc[-1])
+
+                if l_std > 0:
+                    z_score_val = (latest_return - l_mean) / l_std
+
+            # Processa dados de 15 minutos
+            df = raw_intraday[ticker].copy() if len(tickers) > 1 else raw_intraday.copy()
             df = df.dropna(subset=["Close"])
-            if len(df) < (rsi_len + ma_len + 2):
+
+            if df.empty or len(df) < (rsi_len + ma_len + 2):
                 continue
 
             if df.index.tz is None:
@@ -141,6 +163,7 @@ def fetch_and_process_data(
             df["RSI_MA"] = df["RSI"].rolling(window=ma_len).mean()
             df["Spread"] = df["RSI"] - df["RSI_MA"]
             df["Acima_Media"] = df["RSI"] > df["RSI_MA"]
+            df["Z_Score_20d"] = z_score_val
 
             processed[ticker] = df
         except Exception as exc:
@@ -149,29 +172,16 @@ def fetch_and_process_data(
     return processed
 
 
-def main() -> None:
-    st.title("VIÉS MACRO 15M")
-
-    if "last_refresh_ts" not in st.session_state:
-        st.session_state.last_refresh_ts = time.time()
-
-    with st.sidebar:
-        st.header("Parâmetros")
-        rsi_len = st.number_input("Período RSI", min_value=2, max_value=50, value=RSI_PERIOD)
-        ma_len = st.number_input("Média Móvel no RSI (SMA)", min_value=2, max_value=50, value=RSI_MA_PERIOD)
-        include_extended = st.checkbox("Incluir Pré / After-Market", value=False)
-        auto_refresh = st.checkbox("Auto-atualizar (60s)", value=True)
-        refresh_interval = st.slider("Intervalo auto-refresh (s)", min_value=30, max_value=300, value=60, step=15)
-        candles_chart = st.slider("Candles visíveis no gráfico", min_value=30, max_value=150, value=78)
-
-        if st.button("Atualizar Agora", width="stretch"):
-            st.cache_data.clear()
-            st.session_state.last_refresh_ts = time.time()
-            st.rerun()
-
-    data_map = fetch_and_process_data(
-        tuple(TICKERS), int(rsi_len), int(ma_len), include_extended
-    )
+def render_dashboard(
+    rsi_len: int,
+    ma_len: int,
+    include_extended: bool,
+    candles_chart: int,
+) -> None:
+    with st.spinner("Atualizando cotações..."):
+        data_map = fetch_and_process_data(
+            tuple(TICKERS), int(rsi_len), int(ma_len), include_extended
+        )
 
     if not data_map:
         st.error("Não foi possível obter dados do Yahoo Finance no momento. Tente novamente em instantes.")
@@ -179,13 +189,15 @@ def main() -> None:
 
     summary_rows = []
     acima_count = 0
+    z_positive_count = 0
+    z_negative_count = 0
 
     rsi_col_name = f"RSI ({rsi_len})"
     ma_col_name = f"Média RSI ({ma_len})"
 
     for ticker in TICKERS:
         df = data_map.get(ticker)
-        if df is None or len(df) < 2:
+        if df is None:
             continue
 
         last = df.iloc[-1]
@@ -204,6 +216,12 @@ def main() -> None:
         if display_above:
             acima_count += 1
 
+        z_val = float(last["Z_Score_20d"])
+        if z_val > 0:
+            z_positive_count += 1
+        elif z_val < 0:
+            z_negative_count += 1
+
         if display_above and not display_was_above:
             evento = "CRUZOU PARA CIMA"
         elif not display_above and display_was_above:
@@ -220,6 +238,7 @@ def main() -> None:
                 rsi_col_name: round(float(last["RSI"]), 2),
                 ma_col_name: round(float(last["RSI_MA"]), 2),
                 "Spread (RSI - MA)": round(float(last["Spread"]), 2),
+                "Z-Score (20d)": round(z_val, 2),
                 "Status": "ACIMA DA MÉDIA" if display_above else "ABAIXO DA MÉDIA",
                 "Sinal Último Candle": evento,
             }
@@ -228,11 +247,19 @@ def main() -> None:
     summary_df = pd.DataFrame(summary_rows)
     total_ativos = len(summary_df)
 
+    if z_positive_count > z_negative_count:
+        z_winner = f"POS ({z_positive_count} vs {z_negative_count}) ✅"
+    elif z_negative_count > z_positive_count:
+        z_winner = f"NEG ({z_negative_count} vs {z_positive_count}) 🔻"
+    else:
+        z_winner = f"EMP ({z_positive_count} vs {z_negative_count}) ⚖️"
+
     now_brt = datetime.now(TIMEZONE_BRT).strftime("%H:%M:%S")
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4 = st.columns(4)
     col1.metric("Ativos Acima da Média (RSI > SMA)", f"{acima_count} de {total_ativos}")
     col2.metric("Ativos Abaixo da Média (RSI < SMA)", f"{total_ativos - acima_count} de {total_ativos}")
-    col3.metric("Última Atualização (Brasília)", now_brt)
+    col3.metric("Dominância Z-Score (20d)", z_winner)
+    col4.metric("Última Atualização (Brasília)", now_brt)
 
     def highlight_status(val: str) -> str:
         if val == "ACIMA DA MÉDIA":
@@ -248,18 +275,26 @@ def main() -> None:
             return "color: #ef4444; font-weight: bold;"
         return "color: #888888;"
 
+    def highlight_zscore(val: float) -> str:
+        if val > 1.5:
+            return "background-color: rgba(16, 185, 129, 0.2); color: #10b981; font-weight: bold;"
+        elif val < -1.5:
+            return "background-color: rgba(239, 68, 68, 0.2); color: #ef4444; font-weight: bold;"
+        return ""
+
     formatted_prices = []
     for _, row in summary_df.iterrows():
-        tick = row["Ticker_Original"]
-        if "=X" in str(tick) or "DX" in str(tick):
-            formatted_prices.append(f"{row['Preço']:.4f}")
+        tick = str(row["Ticker_Original"])
+        preco_val = row["Preço"]
+        if "=X" in tick or "DX" in tick:
+            formatted_prices.append(f"{preco_val:.4f}")
         else:
-            formatted_prices.append(f"${row['Preço']:.2f}")
+            formatted_prices.append(f"${preco_val:.2f}")
     summary_df["Preço Formated"] = formatted_prices
 
     cols_order = [
         "Ativo", "Último Candle (BRT)", "Preço Formated", rsi_col_name,
-        ma_col_name, "Spread (RSI - MA)", "Status", "Sinal Último Candle"
+        ma_col_name, "Spread (RSI - MA)", "Z-Score (20d)", "Status", "Sinal Último Candle"
     ]
     display_df = summary_df[cols_order].rename(columns={"Preço Formated": "Preço"})
 
@@ -267,14 +302,16 @@ def main() -> None:
         display_df.style
         .map(highlight_status, subset=["Status"])
         .map(highlight_event, subset=["Sinal Último Candle"])
+        .map(highlight_zscore, subset=["Z-Score (20d)"])
         .format({
             rsi_col_name: "{:.2f}",
             ma_col_name: "{:.2f}",
             "Spread (RSI - MA)": "{:+.2f}",
+            "Z-Score (20d)": "{:+.2f}",
         })
     )
 
-    st.dataframe(styled_df, width="stretch", hide_index=True)
+    st.dataframe(styled_df, use_container_width=True, hide_index=True)
 
     st.subheader(f"Curva RSI({rsi_len}) vs. Média Móvel ({ma_len}) — Gráfico de 15 Minutos")
 
@@ -356,17 +393,31 @@ def main() -> None:
         margin=dict(l=20, r=20, t=40, b=20),
     )
 
-    st.plotly_chart(fig, width="stretch")
+    st.plotly_chart(fig, use_container_width=True)
+
+
+def main() -> None:
+    st.title("VIÉS MACRO 15M")
+
+    with st.sidebar:
+        st.header("Parâmetros")
+        rsi_len = st.number_input("Período RSI", min_value=2, max_value=50, value=RSI_PERIOD)
+        ma_len = st.number_input("Média Móvel no RSI (SMA)", min_value=2, max_value=50, value=RSI_MA_PERIOD)
+        include_extended = st.checkbox("Incluir Pré / After-Market", value=False)
+        auto_refresh = st.checkbox("Auto-atualizar (30s)", value=True)
+        candles_chart = st.slider("Candles visíveis no gráfico", min_value=30, max_value=150, value=78)
+
+        if st.button("Atualizar Agora", use_container_width=True):
+            st.cache_data.clear()
 
     if auto_refresh:
-        elapsed = time.time() - st.session_state.last_refresh_ts
-        remaining = max(0.0, refresh_interval - elapsed)
-        time.sleep(min(remaining, 5.0))
-        if time.time() - st.session_state.last_refresh_ts >= refresh_interval:
-            st.session_state.last_refresh_ts = time.time()
-            st.rerun()
-        else:
-            st.rerun()
+        @st.fragment(run_every=30)
+        def auto_updating_view():
+            render_dashboard(int(rsi_len), int(ma_len), include_extended, candles_chart)
+
+        auto_updating_view()
+    else:
+        render_dashboard(int(rsi_len), int(ma_len), include_extended, candles_chart)
 
 
 if __name__ == "__main__":
