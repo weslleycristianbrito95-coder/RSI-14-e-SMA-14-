@@ -33,6 +33,8 @@ st.markdown(
 # Lista de ativos organizada por segmento de mercado
 TICKERS = [
     # --- ÍNDICES & ETFS DE SETORES ---
+    "^GSPC",      # S&P 500 Index (SPX)
+    "SPY",        # SPDR S&P 500 ETF Trust
     "QQQ",        # Nasdaq 100
     "SMH",        # VanEck Semiconductor ETF
     "IGV",        # iShares Expanded Tech-Software ETF
@@ -268,7 +270,7 @@ def render_dashboard(
                 "Ativo": ticker,
                 "Ticker_Original": ticker,
                 "Último Candle (BRT)": df.index[-1].strftime("%d/%m %H:%M"),
-                "Preço": round(float(last["Close"]), 4) if "=X" in ticker or "DX" in ticker else round(float(last["Close"]), 2),
+                "Preço": round(float(last["Close"]), 4) if "=X" in ticker or "DX-Y" in ticker else round(float(last["Close"]), 2),
                 rsi_col_name: round(float(last["RSI"]), 2),
                 ma_col_name: round(float(last["RSI_MA"]), 2),
                 "Spread (RSI - MA)": round(float(last["Spread"]), 2),
@@ -323,7 +325,7 @@ def render_dashboard(
     for _, row in summary_df.iterrows():
         tick = str(row["Ticker_Original"])
         preco_val = row["Preço"]
-        if "=X" in tick or "DX" in tick:
+        if "=X" in tick or "DX-Y" in tick:
             formatted_prices.append(f"{preco_val:.4f}")
         else:
             formatted_prices.append(f"${preco_val:.2f}")
