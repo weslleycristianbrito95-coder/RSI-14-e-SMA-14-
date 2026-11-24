@@ -98,6 +98,19 @@ def calculate_rsi_wilder(series: pd.Series, period: int = 14) -> pd.Series:
     return rsi.fillna(50.0)
 
 
+def _extract_ticker_df(raw_data: pd.DataFrame, ticker: str, total_tickers: int) -> pd.DataFrame:
+    if raw_data is None or raw_data.empty:
+        return pd.DataFrame()
+    if total_tickers == 1:
+        return raw_data.copy()
+    if isinstance(raw_data.columns, pd.MultiIndex):
+        if ticker in raw_data.columns.get_level_values(0):
+            return raw_data[ticker].copy()
+        if ticker in raw_data.columns.get_level_values(-1):
+            return raw_data.xs(ticker, axis=1, level=-1).copy()
+    return pd.DataFrame()
+
+
 @st.cache_data(ttl=25, show_spinner=False)
 def fetch_and_process_data(
     tickers: Tuple[str, ...],
@@ -128,11 +141,11 @@ def fetch_and_process_data(
 
     for ticker in tickers:
         try:
-            # Processa dados diários para o Z-Score de 20 dias
-            df_d = raw_daily[ticker].copy() if len(tickers) > 1 else raw_daily.copy()
+            # Processa dados diários para Z-Score de retorno (20d) e amplitude (20d)
+            df_d = _extract_ticker_df(raw_daily, ticker, len(tickers))
             df_d = df_d.dropna(subset=["Close"])
 
-            z_score_val = 0.0
+            z_score_val = np.nan
             if len(df_d) >= 21:
                 df_d["Daily_Return"] = df_d["Close"].pct_change()
                 rolling_mean = df_d["Daily_Return"].rolling(20).mean()
@@ -142,11 +155,28 @@ def fetch_and_process_data(
                 l_mean = float(rolling_mean.iloc[-1])
                 l_std = float(rolling_std.iloc[-1])
 
-                if l_std > 0:
+                if pd.notna(l_std) and l_std > 0 and pd.notna(latest_return) and pd.notna(l_mean):
                     z_score_val = (latest_return - l_mean) / l_std
 
+            z_score_amp_val = np.nan
+            if {"High", "Low"}.issubset(df_d.columns):
+                df_d_amp = df_d.dropna(subset=["High", "Low"]).copy()
+                low_safe = df_d_amp["Low"].replace(0, np.nan)
+                df_d_amp["Daily_Amp"] = (df_d_amp["High"] - df_d_amp["Low"]) / low_safe
+
+                if len(df_d_amp) >= 20:
+                    amp_mean = df_d_amp["Daily_Amp"].rolling(20).mean()
+                    amp_std = df_d_amp["Daily_Amp"].rolling(20).std()
+
+                    latest_amp = float(df_d_amp["Daily_Amp"].iloc[-1])
+                    a_mean = float(amp_mean.iloc[-1])
+                    a_std = float(amp_std.iloc[-1])
+
+                    if pd.notna(a_std) and a_std > 0 and pd.notna(latest_amp) and pd.notna(a_mean):
+                        z_score_amp_val = (latest_amp - a_mean) / a_std
+
             # Processa dados de 15 minutos
-            df = raw_intraday[ticker].copy() if len(tickers) > 1 else raw_intraday.copy()
+            df = _extract_ticker_df(raw_intraday, ticker, len(tickers))
             df = df.dropna(subset=["Close"])
 
             if df.empty or len(df) < (rsi_len + ma_len + 2):
@@ -164,6 +194,7 @@ def fetch_and_process_data(
             df["Spread"] = df["RSI"] - df["RSI_MA"]
             df["Acima_Media"] = df["RSI"] > df["RSI_MA"]
             df["Z_Score_20d"] = z_score_val
+            df["Z_Score_Amp_20d"] = z_score_amp_val
 
             processed[ticker] = df
         except Exception as exc:
@@ -216,11 +247,14 @@ def render_dashboard(
         if display_above:
             acima_count += 1
 
-        z_val = float(last["Z_Score_20d"])
-        if z_val > 0:
-            z_positive_count += 1
-        elif z_val < 0:
-            z_negative_count += 1
+        z_val = float(last["Z_Score_20d"]) if pd.notna(last["Z_Score_20d"]) else np.nan
+        if pd.notna(z_val):
+            if z_val > 0:
+                z_positive_count += 1
+            elif z_val < 0:
+                z_negative_count += 1
+
+        z_amp_val = float(last["Z_Score_Amp_20d"]) if pd.notna(last["Z_Score_Amp_20d"]) else np.nan
 
         if display_above and not display_was_above:
             evento = "CRUZOU PARA CIMA"
@@ -238,7 +272,8 @@ def render_dashboard(
                 rsi_col_name: round(float(last["RSI"]), 2),
                 ma_col_name: round(float(last["RSI_MA"]), 2),
                 "Spread (RSI - MA)": round(float(last["Spread"]), 2),
-                "Z-Score (20d)": round(z_val, 2),
+                "Z-Score (20d)": z_val,
+                "Z-Score Amp (20d)": z_amp_val,
                 "Status": "ACIMA DA MÉDIA" if display_above else "ABAIXO DA MÉDIA",
                 "Sinal Último Candle": evento,
             }
@@ -276,6 +311,8 @@ def render_dashboard(
         return "color: #888888;"
 
     def highlight_zscore(val: float) -> str:
+        if pd.isna(val):
+            return ""
         if val > 1.5:
             return "background-color: rgba(16, 185, 129, 0.2); color: #10b981; font-weight: bold;"
         elif val < -1.5:
@@ -294,7 +331,8 @@ def render_dashboard(
 
     cols_order = [
         "Ativo", "Último Candle (BRT)", "Preço Formated", rsi_col_name,
-        ma_col_name, "Spread (RSI - MA)", "Z-Score (20d)", "Status", "Sinal Último Candle"
+        ma_col_name, "Spread (RSI - MA)", "Z-Score (20d)", "Z-Score Amp (20d)",
+        "Status", "Sinal Último Candle"
     ]
     display_df = summary_df[cols_order].rename(columns={"Preço Formated": "Preço"})
 
@@ -303,12 +341,17 @@ def render_dashboard(
         .map(highlight_status, subset=["Status"])
         .map(highlight_event, subset=["Sinal Último Candle"])
         .map(highlight_zscore, subset=["Z-Score (20d)"])
-        .format({
-            rsi_col_name: "{:.2f}",
-            ma_col_name: "{:.2f}",
-            "Spread (RSI - MA)": "{:+.2f}",
-            "Z-Score (20d)": "{:+.2f}",
-        })
+        .map(highlight_zscore, subset=["Z-Score Amp (20d)"])
+        .format(
+            {
+                rsi_col_name: "{:.2f}",
+                ma_col_name: "{:.2f}",
+                "Spread (RSI - MA)": "{:+.2f}",
+                "Z-Score (20d)": "{:+.2f}",
+                "Z-Score Amp (20d)": "{:+.2f}",
+            },
+            na_rep="-",
+        )
     )
 
     st.dataframe(styled_df, use_container_width=True, hide_index=True)
@@ -323,12 +366,14 @@ def render_dashboard(
     subplot_titles_list = []
     for t in active_tickers:
         is_abv = bool(data_map[t]["Acima_Media"].iloc[-1])
+        z_amp_last = data_map[t]["Z_Score_Amp_20d"].iloc[-1]
+        z_amp_txt = f"Z-Amp: {z_amp_last:+.2f}" if pd.notna(z_amp_last) else "Z-Amp: -"
         if t in INVERTED_TICKERS:
             label = "ABAIXO" if is_abv else "ACIMA"
-            subplot_titles_list.append(f"{t} — {label} (Invertido)")
+            subplot_titles_list.append(f"{t} — {label} (Invertido) | {z_amp_txt}")
         else:
             label = "ACIMA" if is_abv else "ABAIXO"
-            subplot_titles_list.append(f"{t} — {label}")
+            subplot_titles_list.append(f"{t} — {label} | {z_amp_txt}")
 
     fig = make_subplots(
         rows=num_rows,
