@@ -256,10 +256,25 @@ def build_group_figure(tickers, data_map, candles: int, ncols: int) -> go.Figure
             x=x, y=np.where(above, ma, rsi), mode="lines", line=dict(width=0),
             fill="tonexty", fillcolor="rgba(239,68,68,0.28)", hoverinfo="skip"), row=row, col=col)
 
-        # RSI
+        # RSI colorido por trecho: verde quando RSI > SMA, vermelho quando RSI < SMA
+        # (cada trecho entre dois candles recebe a cor do estado do candle em que termina)
+        for state, seg_color in ((True, UP), (False, DOWN)):
+            seg = above[1:] == state
+            k = int(seg.sum())
+            if k == 0:
+                continue
+            xs = np.empty(3 * k, dtype=object)
+            ys = np.full(3 * k, np.nan)
+            xs[0::3], xs[1::3], xs[2::3] = x[:-1][seg], x[1:][seg], x[1:][seg]
+            ys[0::3], ys[1::3] = rsi[:-1][seg], rsi[1:][seg]
+            fig.add_trace(go.Scatter(
+                x=xs, y=ys, mode="lines", connectgaps=False,
+                line=dict(color=seg_color, width=2), hoverinfo="skip"), row=row, col=col)
+
+        # camada invisível só para o hover mostrar o valor do RSI
         fig.add_trace(go.Scatter(
-            x=x, y=rsi, mode="lines", name="RSI",
-            line=dict(color=color, width=2),
+            x=x, y=rsi, mode="markers", name="RSI",
+            marker=dict(size=1, opacity=0),
             hovertemplate="RSI %{y:.1f}<extra></extra>"), row=row, col=col)
 
         # cruzamentos
