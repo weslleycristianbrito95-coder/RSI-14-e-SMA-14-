@@ -277,16 +277,6 @@ def build_group_figure(tickers, data_map, candles: int, ncols: int) -> go.Figure
             marker=dict(size=1, opacity=0),
             hovertemplate="RSI %{y:.1f}<extra></extra>"), row=row, col=col)
 
-        # cruzamentos
-        cross_up = np.r_[False, above[1:] & ~above[:-1]]
-        cross_dn = np.r_[False, ~above[1:] & above[:-1]]
-        for mask, symbol, c in ((cross_up, "triangle-up", UP), (cross_dn, "triangle-down", DOWN)):
-            if mask.any():
-                fig.add_trace(go.Scatter(
-                    x=x[mask], y=rsi[mask], mode="markers", hoverinfo="skip",
-                    marker=dict(symbol=symbol, size=9, color=c, line=dict(color="#fff", width=0.8))),
-                    row=row, col=col)
-
         # último ponto
         fig.add_trace(go.Scatter(
             x=[x[-1]], y=[rsi[-1]], mode="markers", hoverinfo="skip",
