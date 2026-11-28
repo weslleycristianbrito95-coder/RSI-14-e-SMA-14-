@@ -10,7 +10,7 @@ import streamlit as st
 import yfinance as yf
 
 st.set_page_config(
-    page_title="Viés Macro 15M & 5M — RSI vs SMA",
+    page_title="Viés Macro 15M — RSI vs SMA",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -20,7 +20,6 @@ st.markdown(
     <style>
     [data-testid="stMetricValue"] { font-size: 1.35rem !important; }
     [data-testid="stMetricLabel"] { font-size: 0.82rem !important; }
-    [data-testid="stMetricDelta"] { font-size: 0.80rem !important; }
     </style>
     """,
     unsafe_allow_html=True,
@@ -58,6 +57,7 @@ LABELS = {
 
 RSI_PERIOD = 14
 RSI_MA_PERIOD = 20
+SMA_5M_PERIOD = 20
 Z_WINDOW = 20
 TIMEZONE_BRT = pytz.timezone("America/Sao_Paulo")
 
@@ -121,45 +121,11 @@ def _extract_ticker_df(raw_data: pd.DataFrame, ticker: str, total_tickers: int) 
     return pd.DataFrame()
 
 
-def _process_intraday_rsi(
-    raw_df: pd.DataFrame,
-    ticker: str,
-    total_tickers: int,
-    rsi_len: int,
-    ma_len: int,
-    closed_only: bool,
-    tf_minutes: int,
-    now_brt: pd.Timestamp,
-) -> pd.DataFrame:
-    """Processa série intraday (15m ou 5m) e retorna DataFrame com RSI e SMA."""
-    df = _extract_ticker_df(raw_df, ticker, total_tickers)
-    if df.empty or "Close" not in df.columns:
-        return pd.DataFrame()
-    df = df.dropna(subset=["Close"]).copy()
-    if df.empty:
-        return pd.DataFrame()
-
+def _normalize_tz(df: pd.DataFrame) -> pd.DataFrame:
     if df.index.tz is None:
         df.index = df.index.tz_localize("UTC").tz_convert(TIMEZONE_BRT)
     else:
         df.index = df.index.tz_convert(TIMEZONE_BRT)
-
-    if closed_only:
-        df = df[df.index <= now_brt - timedelta(minutes=tf_minutes)]
-
-    sign = -1.0 if ticker in INVERTED_TICKERS else 1.0
-    rsi = calculate_rsi_wilder(df["Close"], period=rsi_len)
-    if sign < 0:
-        rsi = 100.0 - rsi
-
-    df["RSI"] = rsi
-    df["RSI_MA"] = rsi.rolling(window=ma_len).mean()
-    df = df.dropna(subset=["RSI", "RSI_MA"])
-    if len(df) < 2:
-        return pd.DataFrame()
-
-    df["Spread"] = df["RSI"] - df["RSI_MA"]
-    df["Acima_Media"] = df["RSI"] > df["RSI_MA"]
     return df
 
 
@@ -170,70 +136,96 @@ def fetch_and_process_data(
     ma_len: int,
     include_extended: bool,
     closed_only: bool,
-) -> Tuple[Dict[str, pd.DataFrame], Dict[str, bool]]:
+) -> Dict[str, pd.DataFrame]:
     try:
         raw_daily = yf.download(
             tickers=list(tickers), period="60d", interval="1d",
             group_by="ticker", threads=True, progress=False,
         )
-        raw_15m = yf.download(
+        raw_intraday_15m = yf.download(
             tickers=list(tickers), period="10d", interval="15m",
             group_by="ticker", prepost=include_extended, threads=True, progress=False,
         )
-        raw_5m = yf.download(
-            tickers=list(tickers), period="5d", interval="5m",
+        raw_intraday_5m = yf.download(
+            tickers=list(tickers), period="2d", interval="5m",
             group_by="ticker", prepost=include_extended, threads=True, progress=False,
         )
     except Exception:
-        return {}, {}
+        return {}
 
-    processed_15m: Dict[str, pd.DataFrame] = {}
-    status_5m: Dict[str, bool] = {}
+    processed: Dict[str, pd.DataFrame] = {}
     now_brt = pd.Timestamp.now(tz=TIMEZONE_BRT)
-    n_tickers = len(tickers)
 
     for ticker in tickers:
         try:
-            sign = -1.0 if ticker in INVERTED_TICKERS else 1.0
+            is_inverted = ticker in INVERTED_TICKERS
+            sign = -1.0 if is_inverted else 1.0
 
-            # --- Dados Diários: Variação % e Z-Scores ---
-            z_ret, z_amp, daily_chg = np.nan, np.nan, np.nan
-            df_d = _extract_ticker_df(raw_daily, ticker, n_tickers)
+            # --- Dados Diários: Variação Diária e Z-Scores (baseline = 20 pregões anteriores) ---
+            daily_change_pct = np.nan
+            z_ret, z_amp = np.nan, np.nan
+            df_d = _extract_ticker_df(raw_daily, ticker, len(tickers))
             if not df_d.empty and "Close" in df_d.columns:
                 df_d = df_d.dropna(subset=["Close"])
-                if len(df_d) >= 2:
-                    prev_close = float(df_d["Close"].iloc[-2])
-                    last_close = float(df_d["Close"].iloc[-1])
-                    if prev_close != 0:
-                        daily_chg = ((last_close / prev_close) - 1.0) * 100.0
-
-                z_ret = zscore_last(df_d["Close"].pct_change() * 100.0 * sign)
+                pct_series = df_d["Close"].pct_change() * 100.0
+                if len(pct_series.dropna()) >= 1:
+                    daily_change_pct = float(pct_series.dropna().iloc[-1])
+                z_ret = zscore_last(pct_series * sign)
                 if {"High", "Low"}.issubset(df_d.columns):
                     low = df_d["Low"].replace(0, np.nan)
                     z_amp = zscore_last((df_d["High"] - df_d["Low"]) / low)
 
-            # --- Status 5m ---
-            df_5 = _process_intraday_rsi(
-                raw_5m, ticker, n_tickers, rsi_len, ma_len, closed_only, 5, now_brt
-            )
-            if not df_5.empty:
-                status_5m[ticker] = bool(df_5.iloc[-1]["Acima_Media"])
+            # --- Intraday 5m: Preço vs SMA(20) ---
+            above_sma20_5m = np.nan
+            df_5m = _extract_ticker_df(raw_intraday_5m, ticker, len(tickers))
+            if not df_5m.empty and "Close" in df_5m.columns:
+                df_5m = df_5m.dropna(subset=["Close"]).copy()
+                if not df_5m.empty:
+                    df_5m = _normalize_tz(df_5m)
+                    if closed_only:
+                        df_5m = df_5m[df_5m.index <= now_brt - timedelta(minutes=5)]
+                    if len(df_5m) >= SMA_5M_PERIOD:
+                        sma20_5m = df_5m["Close"].rolling(window=SMA_5M_PERIOD).mean().iloc[-1]
+                        last_close_5m = df_5m["Close"].iloc[-1]
+                        if pd.notna(sma20_5m) and pd.notna(last_close_5m):
+                            # Para ativos invertidos (VIX/DXY), preço < SMA20 = viés de alta (True)
+                            raw_above = bool(last_close_5m > sma20_5m)
+                            above_sma20_5m = (not raw_above) if is_inverted else raw_above
 
             # --- Intraday 15m ---
-            df_15 = _process_intraday_rsi(
-                raw_15m, ticker, n_tickers, rsi_len, ma_len, closed_only, 15, now_brt
-            )
-            if df_15.empty:
+            df = _extract_ticker_df(raw_intraday_15m, ticker, len(tickers))
+            if df.empty or "Close" not in df.columns:
+                continue
+            df = df.dropna(subset=["Close"]).copy()
+            if df.empty:
                 continue
 
-            df_15["Var_Dia"] = daily_chg
-            df_15["Z_Score_20d"] = z_ret
-            df_15["Z_Score_Amp_20d"] = z_amp
-            processed_15m[ticker] = df_15
+            df = _normalize_tz(df)
+
+            if closed_only:  # índice = início do candle; só mantém candles já encerrados
+                df = df[df.index <= now_brt - timedelta(minutes=15)]
+
+            rsi = calculate_rsi_wilder(df["Close"], period=rsi_len)
+            if sign < 0:
+                rsi = 100.0 - rsi  # RSI(-P) == 100 - RSI(P)
+
+            df["RSI"] = rsi
+            df["RSI_MA"] = rsi.rolling(window=ma_len).mean()
+            df = df.dropna(subset=["RSI", "RSI_MA"])
+            if len(df) < 2:
+                continue
+
+            df["Spread"] = df["RSI"] - df["RSI_MA"]
+            df["Acima_Media"] = df["RSI"] > df["RSI_MA"]
+            df["Daily_Change_Pct"] = daily_change_pct
+            df["Above_SMA20_5m"] = above_sma20_5m
+            df["Z_Score_20d"] = z_ret
+            df["Z_Score_Amp_20d"] = z_amp
+            processed[ticker] = df
         except Exception:
             continue
 
-    return processed_15m, status_5m
+    return processed
 
 
 # ----------------------------------------------------------------------------
@@ -361,7 +353,7 @@ def build_group_figure(tickers, data_map, candles: int, ncols: int) -> go.Figure
 # ----------------------------------------------------------------------------
 def render_dashboard(rsi_len, ma_len, include_extended, closed_only, candles_chart, ncols) -> None:
     with st.spinner("Atualizando cotações..."):
-        data_map, status_5m = fetch_and_process_data(
+        data_map = fetch_and_process_data(
             tuple(TICKERS), int(rsi_len), int(ma_len), include_extended, closed_only
         )
 
@@ -369,7 +361,11 @@ def render_dashboard(rsi_len, ma_len, include_extended, closed_only, candles_cha
         st.error("Não foi possível obter dados do Yahoo Finance no momento. Tente novamente em instantes.")
         return
 
-    rows, acima_15m, z_pos, z_neg = [], 0, 0, 0
+    rows = []
+    acima_count = 0
+    sma5m_above_count = 0
+    sma5m_below_count = 0
+    z_pos, z_neg = 0, 0
     rsi_col, ma_col = f"RSI ({rsi_len})", f"Média RSI ({ma_len})"
 
     for ticker in TICKERS:
@@ -378,14 +374,28 @@ def render_dashboard(rsi_len, ma_len, include_extended, closed_only, candles_cha
             continue
         last, prev = df.iloc[-1], df.iloc[-2]
         is_above, was_above = bool(last["Acima_Media"]), bool(prev["Acima_Media"])
-        acima_15m += is_above
+        acima_count += is_above
+
+        # Contagem SMA 20 (5m)
+        above_5m = last["Above_SMA20_5m"]
+        if pd.notna(above_5m):
+            if bool(above_5m):
+                sma5m_above_count += 1
+                sma5m_status = "ACIMA"
+            else:
+                sma5m_below_count += 1
+                sma5m_status = "ABAIXO"
+        else:
+            sma5m_status = "-"
+
+        # Variação diária
+        daily_chg = float(last["Daily_Change_Pct"]) if pd.notna(last["Daily_Change_Pct"]) else np.nan
 
         z_val = float(last["Z_Score_20d"]) if pd.notna(last["Z_Score_20d"]) else np.nan
         if pd.notna(z_val):
             z_pos += z_val > 0
             z_neg += z_val < 0
         z_amp = float(last["Z_Score_Amp_20d"]) if pd.notna(last["Z_Score_Amp_20d"]) else np.nan
-        var_dia = float(last["Var_Dia"]) if pd.notna(last["Var_Dia"]) else np.nan
 
         if is_above and not was_above:
             evento = "CRUZOU PARA CIMA"
@@ -394,38 +404,25 @@ def render_dashboard(rsi_len, ma_len, include_extended, closed_only, candles_cha
         else:
             evento = "Mantendo tendência"
 
-        st_5m_bool = status_5m.get(ticker)
-        if st_5m_bool is True:
-            st_5m_txt = "ACIMA"
-        elif st_5m_bool is False:
-            st_5m_txt = "ABAIXO"
-        else:
-            st_5m_txt = "-"
-
         rows.append({
             "Grupo": GROUP_OF[ticker],
             "Ativo": label(ticker),
             "Último Candle (BRT)": df.index[-1].strftime("%d/%m %H:%M"),
             "Preço": fmt_price(ticker, float(last["Close"])),
-            "Var. Dia (%)": var_dia,
+            "Var. Dia (%)": daily_chg,
             rsi_col: float(last["RSI"]),
             ma_col: float(last["RSI_MA"]),
             "Spread (RSI - MA)": float(last["Spread"]),
+            "SMA 20 (5m)": sma5m_status,
             "Z-Score (20d)": z_val,
             "Z-Score Amp (20d)": z_amp,
-            "Status 5M": st_5m_txt,
-            "Status 15M": "ACIMA DA MÉDIA" if is_above else "ABAIXO DA MÉDIA",
+            "Status 15m": "ACIMA DA MÉDIA" if is_above else "ABAIXO DA MÉDIA",
             "Sinal Último Candle": evento,
         })
 
     summary_df = pd.DataFrame(rows)
-    total_15m = len(summary_df)
-    abaixo_15m = total_15m - acima_15m
-
-    # Contagem 5M
-    total_5m = len(status_5m)
-    acima_5m = sum(1 for v in status_5m.values() if v)
-    abaixo_5m = total_5m - acima_5m
+    total = len(summary_df)
+    total_5m = sma5m_above_count + sma5m_below_count
 
     if z_pos > z_neg:
         z_winner = f"POS ({z_pos} vs {z_neg}) ✅"
@@ -434,17 +431,13 @@ def render_dashboard(rsi_len, ma_len, include_extended, closed_only, candles_cha
     else:
         z_winner = f"EMP ({z_pos} vs {z_neg}) ⚖️"
 
-    c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("15M: Acima da Média", f"{acima_15m} de {total_15m}")
-    c2.metric("15M: Abaixo da Média", f"{abaixo_15m} de {total_15m}")
-    c3.metric(
-        "5M: Acima vs Abaixo SMA",
-        f"▲ {acima_5m} | ▼ {abaixo_5m}",
-        delta=f"Total: {total_5m} ativos",
-        delta_color="off",
-    )
-    c4.metric("Dominância Z-Score (20d)", z_winner)
-    c5.metric("Última Atualização (BRT)", datetime.now(TIMEZONE_BRT).strftime("%H:%M:%S"))
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
+    c1.metric("15m: Acima Média RSI", f"{acima_count} de {total}")
+    c2.metric("15m: Abaixo Média RSI", f"{total - acima_count} de {total}")
+    c3.metric("5m: Acima SMA 20", f"{sma5m_above_count} de {total_5m}")
+    c4.metric("5m: Abaixo SMA 20", f"{sma5m_below_count} de {total_5m}")
+    c5.metric("Dominância Z-Score (20d)", z_winner)
+    c6.metric("Atualização (BRT)", datetime.now(TIMEZONE_BRT).strftime("%H:%M:%S"))
 
     missing = [label(t) for t in TICKERS if t not in data_map]
     if missing:
@@ -457,12 +450,14 @@ def render_dashboard(rsi_len, ma_len, include_extended, closed_only, candles_cha
             return f"background-color: rgba(239,68,68,0.25); color: {DOWN}; font-weight: bold;"
         return ""
 
-    def hl_var(v):
-        if pd.isna(v) or v == 0:
+    def hl_daily(v):
+        if pd.isna(v):
             return ""
         if v > 0:
             return f"color: {UP}; font-weight: bold;"
-        return f"color: {DOWN}; font-weight: bold;"
+        if v < 0:
+            return f"color: {DOWN}; font-weight: bold;"
+        return ""
 
     def hl_event(v):
         if "CIMA" in v:
@@ -482,8 +477,8 @@ def render_dashboard(rsi_len, ma_len, include_extended, closed_only, candles_cha
 
     styled = (
         summary_df.style
-        .map(hl_status, subset=["Status 15M", "Status 5M"])
-        .map(hl_var, subset=["Var. Dia (%)"])
+        .map(hl_status, subset=["Status 15m", "SMA 20 (5m)"])
+        .map(hl_daily, subset=["Var. Dia (%)"])
         .map(hl_event, subset=["Sinal Último Candle"])
         .map(hl_z, subset=["Z-Score (20d)", "Z-Score Amp (20d)"])
         .format({
@@ -497,8 +492,8 @@ def render_dashboard(rsi_len, ma_len, include_extended, closed_only, candles_cha
     )
     stretch(st.dataframe, styled, hide_index=True)
     st.caption(
-        "VIX e DXY: RSI e Z-Score de retorno calculados com sinal invertido (queda = viés de alta). "
-        "Var. Dia (%) reflete a variação nominal do ativo."
+        "VIX e DXY: RSI, Z-Score de retorno e SMA 20 (5m) calculados com leitura invertida "
+        "(preço abaixo da média = viés de alta). A Var. Dia (%) exibe a variação nominal do ativo."
     )
 
     st.subheader(f"RSI({rsi_len}) vs. Média ({ma_len}) — Gráfico de 15 Minutos")
@@ -514,7 +509,7 @@ def render_dashboard(rsi_len, ma_len, include_extended, closed_only, candles_cha
 
 
 def main() -> None:
-    st.title("VIÉS MACRO 15M & 5M")
+    st.title("VIÉS MACRO 15M")
 
     with st.sidebar:
         st.header("Parâmetros")
